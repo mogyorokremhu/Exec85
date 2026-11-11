@@ -9,7 +9,12 @@ W=/work
 CMDLINE=${KERNEL_CMDLINE:-"console=tty0 console=ttyS0,115200 rdinit=/sbin/init"}
 
 echo "==> installing build tools"
-apk add --no-cache rust cargo build-base xorriso limine kmod cpio gzip >/dev/null
+apk add --no-cache rust cargo build-base xorriso kmod cpio gzip >/dev/null
+# Alpine splits Limine into several packages; install every part (not docs) and show what we got.
+LIMINE_PKGS=$(apk search -q 'limine*' | grep -v -e -doc -e -dev -e -bash -e -zsh -e -fish -e -pyc | tr '\n' ' ')
+echo "limine packages: $LIMINE_PKGS"
+apk add --no-cache $LIMINE_PKGS >/dev/null
+for p in $LIMINE_PKGS; do apk info -L "$p" 2>/dev/null | grep -i -e limine -e BOOTX64 | head -20; done
 
 echo "==> building the Exec85 program (static)"
 cd "$SRC/ui"
@@ -29,6 +34,10 @@ KVER=$(ls "$R/lib/modules" | head -n1)
 echo "kernel: $KVER"
 depmod -b "$R" "$KVER"
 cp "$R/boot/vmlinuz-lts" "$W/vmlinuz"
+# Firmware blobs are huge (hundreds of MB); they become an optional package set later.
+rm -rf "${R:?}/lib/firmware"
+echo "--- biggest directories in the rootfs (KB) ---"
+du -sk "$R"/* "$R"/lib/modules/*/kernel/* 2>/dev/null | sort -rn | head -15
 rm -rf "${R:?}/boot" "${R:?}/var/cache/apk" "${R:?}/usr/share/man" "${R:?}/usr/share/apk"
 
 install -D -m 755 "$BIN" "$R/usr/bin/exec85"
@@ -50,9 +59,9 @@ rm -rf "${ISO:?}"; mkdir -p "$ISO/boot/limine" "$ISO/EFI/BOOT"
 cp "$W/vmlinuz" "$ISO/boot/vmlinuz"
 cp "$W/initramfs" "$ISO/boot/initramfs"
 sed "s|@CMDLINE@|$CMDLINE|" "$SRC/image/boot/limine.conf" > "$ISO/boot/limine/limine.conf"
-L=/usr/share/limine
-cp "$L/limine-bios.sys" "$L/limine-bios-cd.bin" "$L/limine-uefi-cd.bin" "$ISO/boot/limine/"
-cp "$L/BOOTX64.EFI" "$ISO/EFI/BOOT/"
+findone() { f=$(find /usr -name "$1" 2>/dev/null | head -n1); [ -n "$f" ] || { echo "missing $1"; exit 1; }; echo "$f"; }
+cp "$(findone limine-bios.sys)" "$(findone limine-bios-cd.bin)" "$(findone limine-uefi-cd.bin)" "$ISO/boot/limine/"
+cp "$(findone BOOTX64.EFI)" "$ISO/EFI/BOOT/"
 mkdir -p "$OUT"
 xorriso -as mkisofs -R -r -J \
     -b boot/limine/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \

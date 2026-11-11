@@ -68,6 +68,7 @@ mod drm {
     struct MapDumb { handle: u32, pad: u32, offset: u64 }
 
     pub const GETRESOURCES: c_ulong = iowr(0xA0, std::mem::size_of::<CardRes>());
+    #[allow(dead_code)]
     pub const GETCRTC: c_ulong = iowr(0xA1, std::mem::size_of::<Crtc>());
     pub const SETCRTC: c_ulong = iowr(0xA2, std::mem::size_of::<Crtc>());
     pub const GETENCODER: c_ulong = iowr(0xA6, std::mem::size_of::<Encoder>());
