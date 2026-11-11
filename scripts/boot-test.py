@@ -515,7 +515,7 @@ def scenario_testing():
         terminal_run(vm, "exec85 --svc add nginx --user root -- nginx -g 'daemon off;'; exec85 --svc start nginx; echo NG=$?", "NG=0", 60, "services: nginx defined and started")
         d = svc_line(vm, "nginx", lambda d: d["status"] == "running", 60)
         step("services: nginx is running", d is not None)
-        terminal_run(vm, "wget -S -O /dev/null http://127.0.0.1/ 2>&1 | grep -o 'HTTP/1.[1] [0-9]*'", "HTTP/1.1 ", 60, "services: nginx answers")
+        terminal_run(vm, "wget -S -O /dev/null http://127.0.0.1/ 2>&1 | grep -o 'HTTP/1.[1] [0-9]*'", "HTTP/1.1_", 60, "services: nginx answers")
         terminal_run(vm, "exec85 --svc stop web; exec85 --svc remove web; echo GONE=$?", "GONE=0", 60, "services: a service is stopped and removed")
         d = svc_line(vm, "web", lambda d: d["status"] != "running", 30, after=0)
         press(vm, "f4")
