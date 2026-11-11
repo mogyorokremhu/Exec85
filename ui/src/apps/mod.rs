@@ -6,6 +6,12 @@
 use crate::keys::Key;
 use crate::layout::Rect;
 use crate::paint::Painter;
+pub mod calculator;
+pub mod clock;
+pub mod notepad;
+pub mod reversi;
+pub mod snake;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -70,12 +76,18 @@ impl Application for Placeholder {
     fn state(&self) -> String { format!("name={}", self.0.name()) }
 }
 
-pub fn create(kind: Kind, _env: &Env) -> Box<dyn Application> {
-    Box::new(Placeholder(kind))
+pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
+    match kind {
+        Kind::Calculator => Box::new(calculator::Calculator::new()),
+        Kind::Clock => Box::new(clock::Clock::new()),
+        Kind::Notepad => Box::new(notepad::Notepad::new(env)),
+        Kind::Reversi => Box::new(reversi::Reversi::new()),
+        Kind::Snake => Box::new(snake::Snake::new(40, 20)),
+        other => Box::new(Placeholder(other)),
+    }
 }
 
 /// Open a file in the editor.
 pub fn open_file(path: PathBuf, env: &Env) -> Box<dyn Application> {
-    let _ = path;
-    create(Kind::Notepad, env)
+    Box::new(notepad::Notepad::open(path, env))
 }

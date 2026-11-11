@@ -126,11 +126,18 @@ impl App {
         let root = if self.app_count == 0 {
             if self.details { Node::Split { dir: main, pct: if self.stacked { 62 } else { 64 }, a: leaf(Win::Files), b: leaf(Win::Details) } } else { Node::Leaf(Win::Files) }
         } else {
-            fn stack(dir: Dir, n: usize, i: usize) -> Node<Win> {
-                if n <= 1 { Node::Leaf(Win::App(i)) } else { Node::Split { dir, pct: 100 / n, a: Box::new(Node::Leaf(Win::App(i))), b: Box::new(stack(dir, n - 1, i + 1)) } }
-            }
+            // The app windows share their half of the screen: 1 = whole area, 2 = split in two,
+            // 3 = one tall window beside two stacked ones, 4 = a 2x2 grid.
+            let leaf_app = |i: usize| Box::new(Node::Leaf(Win::App(i)));
+            let pair = |dir: Dir, a: usize, b: usize| Node::Split { dir, pct: 50, a: leaf_app(a), b: leaf_app(b) };
+            let apps = match self.app_count {
+                1 => Node::Leaf(Win::App(0)),
+                2 => pair(other, 0, 1),
+                3 => Node::Split { dir: Dir::SideBySide, pct: 50, a: leaf_app(0), b: Box::new(pair(Dir::Stacked, 1, 2)) },
+                _ => Node::Split { dir: Dir::SideBySide, pct: 50, a: Box::new(pair(Dir::Stacked, 0, 1)), b: Box::new(pair(Dir::Stacked, 2, 3)) },
+            };
             let explorer = if self.details { Node::Split { dir: other, pct: 70, a: leaf(Win::Files), b: leaf(Win::Details) } } else { Node::Leaf(Win::Files) };
-            Node::Split { dir: main, pct: 36, a: Box::new(explorer), b: Box::new(stack(other, self.app_count, 0)) }
+            Node::Split { dir: main, pct: 36, a: Box::new(explorer), b: Box::new(apps) }
         };
         let mut out = Vec::new();
         root.tiles(area, &mut out);

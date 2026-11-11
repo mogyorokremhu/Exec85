@@ -300,9 +300,10 @@ fn render_to_file(args: &[String]) {
             login::draw(&lg, &mut c, &m);
         }
         _ => {
-            let mut app = App::new(cols, rows, mode, dir);
-            for k in parsed { app.handle(k); }
-            ui::draw(&app, &[], &mut c, &m);
+            let mut shell = shell::Shell::new(cols, rows, mode, dir, std::env::temp_dir(), Arc::new(|| {}));
+            for k in parsed { shell.handle(k); }
+            shell.sync_sizes();
+            ui::draw(&shell.app, &shell.windows, &mut c, &m);
         }
     }
     stdfs::write(&out, c.to_ppm()).expect("write image");

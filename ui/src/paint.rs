@@ -53,6 +53,14 @@ impl Painter<'_> {
         Rect { x: r.x + 1, y: r.y + 1, w: r.w.saturating_sub(2), h: r.h.saturating_sub(2) }
     }
 
+    /// Text drawn `k` times bigger (each character takes k cells across and k rows down).
+    pub fn big_text(&mut self, col: usize, row: usize, s: &str, k: usize, fg: u32) {
+        let m = self.m;
+        for (i, ch) in s.chars().enumerate() {
+            if ch != ' ' { self.c.glyph((col + i * k) * m.cw, row * m.ch + m.scale * k, ch, m.scale * k, fg); }
+        }
+    }
+
     /// A single-line input box, `w` cells wide, drawn on one row. Passwords show as dots.
     pub fn field(&mut self, col: usize, row: usize, w: usize, text: &str, focused: bool, masked: bool) {
         let t = self.t;
