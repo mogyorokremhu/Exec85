@@ -9,7 +9,10 @@
 Every step reads the state lines the programs print on the serial port (EXEC85_STATE / EXEC85_INSTALLER /
 EXEC85_LOGIN) and checks screenshot pixels. Screenshots go to the output folder.
 
-usage: boot-test.py ISO bios|uefi OUTDIR [--accel kvm|tcg]      exit code 0 = everything passed
+  Scenario 3 (testing): only with --testing. Boot the TESTING ISO with NO disk, walk the wizard, choose "Skip installation",
+                        log in, and open every app from the Apps menu, checking each one's EXEC85_APP state line.
+
+usage: boot-test.py ISO bios|uefi OUTDIR [--accel kvm|tcg] [--testing]      exit code 0 = everything passed
 """
 import glob, json, os, re, socket, struct, subprocess, sys, time, zlib
 
@@ -220,7 +223,7 @@ def scenario_live():
         step("live: help dialog drawn", bar_pixel(vm.screenshot("6-help")) == DARK["bar"])
         press(vm, "esc", dialog="none")
         press(vm, "f10", menu="file")
-        press(vm, "up", item="6")
+        press(vm, "up", item="15")
         press(vm, "ret", dialog="confirm_poweroff_")
         press(vm, "n", dialog="none")
         # Log out goes back to the installer
@@ -323,10 +326,104 @@ def scenario_install():
         vm.stop()
 
 
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake"]
+
+def app_line(vm, name, timeout=STEP_TIMEOUT):
+    """Wait until the newest EXEC85_APP line is for `name`; return its fields."""
+    end = time.time() + timeout
+    while time.time() < end:
+        found = None
+        for line in vm.text().splitlines():
+            if "EXEC85_APP " in line:
+                d = dict(kv.split("=", 1) for kv in line.split("EXEC85_APP ", 1)[1].split() if "=" in kv)
+                found = d
+        if found and found.get("name") == name: return found
+        time.sleep(0.1)
+    return None
+
+def app_press(vm, key, name, **expect):
+    """Press a key while an app has the focus and check its next state."""
+    n = len(vm.lines("EXEC85_STATE"))
+    vm.monitor(f"sendkey {key}")
+    vm.wait_line("EXEC85_STATE", lambda d: True, STEP_TIMEOUT, after=n)
+    time.sleep(0.3)
+    d = app_line(vm, name, 5) or {}
+    step(f"app {name}: key {key}" + "".join(f" -> {k}={v}" for k, v in expect.items()), all(d.get(k) == v for k, v in expect.items()), str({k: d.get(k) for k in expect}))
+    return d
+
+def open_app(vm, index):
+    press(vm, "alt-a", menu="apps")
+    for _ in range(index): press(vm, "down")
+    press(vm, "ret", menu="none")
+    d = app_line(vm, APPS[index])
+    step(f"app {APPS[index]} opens", d is not None, "no EXEC85_APP line")
+    return d
+
+def scenario_testing():
+    I = "EXEC85_INSTALLER"
+    vm = VM("testing", cdrom=iso)          # no disk at all
+    try:
+        step("testing: installer is up", vm.wait_for(r"EXEC85_SCREEN installer", 600 if SLOW else 120) is not None)
+        press(vm, "ret", I, step="theme")
+        press(vm, "ret", I, step="keyboard")
+        press(vm, "ret", I, step="timezone")
+        press(vm, "ret", I, step="hostname")
+        press(vm, "ret", I, step="user")
+        typed(vm, ["t", "e", "s", "t", "e", "r"], I, user="tester")
+        press(vm, "ret", I, step="password")
+        typed(vm, ["s", "e", "c", "r", "e", "t", "7", "minus"], I, pw="set")
+        press(vm, "tab", I, field="1")
+        typed(vm, ["s", "e", "c", "r", "e", "t", "7", "minus"], I)
+        press(vm, "ret", I, step="disk")
+        d = vm.lines(I)[-1]
+        step("testing: the Skip choice is offered and selected", d["sel"].startswith("Skip_installation"), d["sel"])
+        press(vm, "ret", I, step="confirm")
+        press(vm, "ret", I, step="installing")
+        r = vm.wait_for(r"EXEC85_INSTALL result=(ok|failed)", 60)
+        step("testing: set-up in memory finished", r is not None and r[1] == "ok")
+        d = vm.wait_line(I, lambda d: d["step"] == "done" and d["result"] == "ok", STEP_TIMEOUT)
+        step("testing: complete screen shown", d is not None)
+        vm.monitor("sendkey ret")
+        step("testing: login screen follows", vm.wait_for(r"EXEC85_SCREEN login", 60) is not None)
+        d = vm.wait_line("EXEC85_LOGIN", lambda d: d["user"] == "tester", 10)
+        step("testing: login knows the new user", d is not None, str(vm.lines("EXEC85_LOGIN")[-1:]))
+        typed(vm, ["s", "e", "c", "r", "e", "t", "7", "minus"], "EXEC85_LOGIN", pw_len="8")
+        vm.monitor("sendkey ret")
+        d = vm.wait_line("EXEC85_STATE", lambda d: True, STEP_TIMEOUT)
+        step("testing: shell starts as the new user", d is not None and d["user"] == "tester" and d["uid"] == "1000", str(d))
+
+        open_app(vm, 7)   # calculator
+        for k in ["6", "shift-8", "7"]: app_press(vm, k, "calculator")
+        app_press(vm, "ret", "calculator", result="42")
+        press(vm, "f4")
+        open_app(vm, 1)   # terminal
+        for k in "echo":
+            vm.monitor(f"sendkey {k}")
+        vm.monitor("sendkey spc")
+        for k in ["h", "i", "1", "2"]: vm.monitor(f"sendkey {k}")
+        vm.monitor("sendkey ret")
+        end = time.time() + STEP_TIMEOUT
+        ok = False
+        while time.time() < end and not ok:
+            time.sleep(0.5)
+            d = app_line(vm, "terminal", 1) or {}
+            ok = "hi12" in (d.get("l1", "") + d.get("l2", "") + d.get("l3", ""))
+        step("terminal runs a real shell command", ok, str(d))
+        press(vm, "f4")
+        for i in (3, 4, 5, 6, 8, 9, 2, 0):
+            open_app(vm, i)
+            press(vm, "f4")
+        vm.screenshot("t1-shell")
+    finally:
+        vm.stop()
+
 failure = None
 try:
-    scenario_live()
-    scenario_install()
+    if "--testing" in sys.argv:
+        scenario_testing()
+    else:
+        scenario_live()
+        scenario_install()
 except Exception as e:
     failure = str(e)
 result["passed"] = failure is None
