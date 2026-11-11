@@ -330,7 +330,13 @@ def scenario_install():
         open_app(vm, 1)
         terminal_run(vm, "exec85 --svc add ticker -- sleep 100000; echo TA=$?", "TA=0", 90, "installed: a service is defined")
         terminal_run(vm, "exec85 --svc start ticker; echo TK=$?", "TK=0", 90, "installed: the service starts")
-        step("installed: the service is running", svc_line(vm, "ticker", lambda d: d["status"] == "running" and d["pid"] != "-", 60) is not None)
+        d = svc_line(vm, "ticker", lambda d: d["status"] == "running" and d["pid"] != "-", 60)
+        if d is None:   # diagnostics for the log: what is really running?
+            for cmd in ["ps -o user,pid,args | grep 100000 | head -3; echo DIAG$((0+1))", "exec85 --svc log ticker | tail -2; echo DIAG$((0+2))", "cat /etc/init.d/exec85-ticker | head -12 | tr -s ' ' '_'; echo DIAG$((0+3))"]:
+                try: terminal_run(vm, cmd, "DIAG", 20, "diagnostic")
+                except AssertionError: pass
+                print("DIAG>", app_line(vm, "terminal", 1), flush=True)
+        step("installed: the service is running", d is not None)
         press(vm, "f4")
         press(vm, "f10", menu="file")
         press(vm, "up"); press(vm, "up", item="14")
