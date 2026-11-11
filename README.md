@@ -2,7 +2,7 @@
 
 A lightweight, keyboard-driven, Linux-based server OS with a 1985-style tiled interface.
 
-> **Status:** early development. Nothing here is ready to install yet.
+> **Status:** early development. The image boots and the keyboard-driven shell (menu bar, drive row, file browser, light/dark theme) works. There is no installer yet, so it cannot be installed on a disk.
 
 ## What it is
 
