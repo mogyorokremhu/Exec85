@@ -14,6 +14,8 @@ pub mod network;
 pub mod notepad;
 pub mod paint;
 pub mod reversi;
+pub mod services;
+pub mod software;
 pub mod snake;
 pub mod terminal;
 
@@ -22,14 +24,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake }
+pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software }
 
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Kind::Notepad => "notepad", Kind::Terminal => "terminal", Kind::Paint => "paint", Kind::Monitor => "monitor",
             Kind::DiskUsage => "diskusage", Kind::Network => "network", Kind::Clock => "clock",
-            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake",
+            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software",
         }
     }
 }
@@ -88,6 +90,8 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Notepad => Box::new(notepad::Notepad::new(env)),
         Kind::Paint => Box::new(paint::Paint::new(env)),
         Kind::Monitor => Box::new(monitor::Monitor::new()),
+        Kind::Services => Box::new(services::Services::new(helper_backend())),
+        Kind::Software => Box::new(software::Software::new(helper_backend())),
         Kind::Network => Box::new(network::Network::new()),
         Kind::Terminal => Box::new(terminal::Terminal::open(env)),
         Kind::DiskUsage => Box::new(diskusage::DiskUsage::new(env)),
@@ -100,4 +104,39 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
 /// Open a file in the editor.
 pub fn open_file(path: PathBuf, env: &Env) -> Box<dyn Application> {
     Box::new(notepad::Notepad::open(path, env))
+}
+
+/// A request to the privileged helper (replaceable in tests).
+pub type Backend = Arc<dyn Fn(&[String]) -> Result<String, String> + Send + Sync>;
+
+pub fn helper_backend() -> Backend {
+    Arc::new(|w: &[String]| { let r: Vec<&str> = w.iter().map(String::as_str).collect(); crate::helper::call(&r) })
+}
+
+/// One background request at a time: the screen keeps working while the helper is busy.
+pub struct Job { slot: Arc<std::sync::Mutex<Option<(String, Result<String, String>)>>>, pub busy: bool }
+
+impl Job {
+    pub fn new() -> Job { Job { slot: Arc::new(std::sync::Mutex::new(None)), busy: false } }
+    /// Start `words` on the backend; `tag` says what it was for. Returns false if one is already running.
+    pub fn start(&mut self, env: &Env, be: &Backend, tag: &str, words: Vec<String>) -> bool {
+        if self.busy { return false; }
+        self.busy = true;
+        let (slot, be, wake, tag) = (self.slot.clone(), be.clone(), env.wake.clone(), tag.to_string());
+        std::thread::spawn(move || { let r = be(&words); *slot.lock().unwrap() = Some((tag, r)); wake(); });
+        true
+    }
+    pub fn poll(&mut self) -> Option<(String, Result<String, String>)> {
+        let r = self.slot.lock().unwrap().take();
+        if r.is_some() { self.busy = false; }
+        r
+    }
+}
+
+/// Edit a line of text with the keyboard; returns true if the key changed it.
+pub fn edit_text(s: &mut String, k: &Key, max: usize) -> bool {
+    use crate::keys::code;
+    if k.code == code::BACKSPACE { return s.pop().is_some(); }
+    if let Some(c) = k.ch() { if !c.is_control() && s.chars().count() < max { s.push(c); return true; } }
+    false
 }

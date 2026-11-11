@@ -107,8 +107,17 @@ fn login_cycle(exe: &Path) {
     } else { thread::sleep(Duration::from_secs(2)); }
 }
 
+/// The privileged helper runs for as long as the system does; if it ever dies it is started again.
+fn keep_helper_running(exe: PathBuf) {
+    thread::spawn(move || loop {
+        let _ = Command::new(&exe).arg("--helperd").stdin(Stdio::null()).status();
+        thread::sleep(Duration::from_secs(1));
+    });
+}
+
 pub fn run() -> ! {
     let exe = exe_path();
+    keep_helper_running(exe.clone());
     let live = cmdline_has("exec85.live");
     console_line(&format!("EXEC85_SUPERVISOR start mode={}", if live { "live" } else { "installed" }));
     if !live { loop { login_cycle(&exe); } }
