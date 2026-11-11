@@ -212,6 +212,22 @@ fn serve_one(mut s: UnixStream) {
     let _ = s.write_all(reply.as_bytes());
 }
 
+/// The process id of a running service: the process owned by the service's user whose command line is exactly the service's command.
+pub fn find_pid(proc_dir: &Path, d: &ServiceDef, uid: Option<u32>) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let want = services::split_command(&d.command).ok()?;
+    let mut best = None;
+    for e in std::fs::read_dir(proc_dir).ok()?.flatten() {
+        let Some(pid) = e.file_name().to_string_lossy().parse::<u32>().ok() else { continue };
+        let Ok(raw) = std::fs::read(e.path().join("cmdline")) else { continue };
+        let args: Vec<String> = raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+        if args != want { continue; }
+        if let (Some(u), Ok(m)) = (uid, std::fs::metadata(e.path())) { if m.uid() != u { continue; } }
+        best = Some(best.map_or(pid, |b: u32| b.min(pid)));
+    }
+    best
+}
+
 /// Print one console line whenever a service changes state (so tests, and people watching the console, can see it).
 fn report_loop() {
     let mut last = std::collections::HashMap::<String, String>::new();
@@ -220,7 +236,8 @@ fn report_loop() {
         for n in list_names(ctx.root) {
             if let Ok(d) = load(ctx.root, &n) {
                 let st = format!("{:?}", status_of(&ctx, &d)).to_lowercase();
-                let pid = std::fs::read_to_string(format!("/run/{}.pid", d.init_name())).map(|s| s.trim().to_string()).unwrap_or_else(|_| "-".into());
+                let uid = account::users(ctx.root).into_iter().find(|u| u.name == d.user).map(|u| u.uid);
+                let pid = find_pid(Path::new("/proc"), &d, uid).map_or("-".to_string(), |p| p.to_string());
                 let line = format!("EXEC85_SVC name={n} status={st} pid={pid}");
                 if last.get(&n) != Some(&line) { crate::supervisor::console_line(&line); last.insert(n, line); }
             }
@@ -374,6 +391,18 @@ mod tests {
         assert!(handle(&c, &w("rm -rf /")).is_err(), "unknown actions are refused");
         assert_eq!(f.calls.borrow().len(), 3, "only the add, the odd search and the real search ran");
         let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn finds_the_process_of_a_service() {
+        let mut child = std::process::Command::new("sleep").arg("1234").spawn().unwrap();
+        let d = ServiceDef { name: "s".into(), command: "sleep 1234".into(), user: "x".into(), ..Default::default() };
+        assert_eq!(find_pid(Path::new("/proc"), &d, None), Some(child.id()));
+        assert_eq!(find_pid(Path::new("/proc"), &d, Some(crate::sys::uid())), Some(child.id()));
+        assert_eq!(find_pid(Path::new("/proc"), &d, Some(crate::sys::uid().wrapping_add(7))), None, "another user's process does not count");
+        let other = ServiceDef { command: "sleep 4321".into(), ..d.clone() };
+        assert_eq!(find_pid(Path::new("/proc"), &other, None), None);
+        child.kill().unwrap(); child.wait().unwrap();
     }
 
     #[test]
