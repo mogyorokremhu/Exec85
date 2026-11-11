@@ -7,7 +7,7 @@ pub struct Rect { pub x: usize, pub y: usize, pub w: usize, pub h: usize }
 pub enum Dir { SideBySide, Stacked }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Win { Files, Details }
+pub enum Win { Files, Details, App(usize) }
 
 /// A layout is a tree: either one window, or a split into two parts.
 pub enum Node<T> {

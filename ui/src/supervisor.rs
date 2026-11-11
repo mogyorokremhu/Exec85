@@ -18,6 +18,8 @@ pub const EXIT_LOGOUT: i32 = 0;
 pub const EXIT_POWEROFF: i32 = 10;
 pub const EXIT_REBOOT: i32 = 11;
 pub const EXIT_TRY_LIVE: i32 = 12;
+/// TESTING-ONLY: the installer's "Skip installation" finished setting up in memory; go on to the login screen.
+pub const EXIT_SETUP_DONE: i32 = 13;
 pub const EXIT_LOGIN_OK: i32 = 20;
 
 pub struct Stage { pub code: i32, pub login_user: Option<String> }
@@ -92,28 +94,31 @@ fn after(code: i32) {
     match code { EXIT_POWEROFF | EXIT_REBOOT => power(code), _ => {} }
 }
 
+/// The login -> shell loop (installed systems, and the testing build after "Skip installation").
+fn login_cycle(exe: &Path) {
+    let s = stage(exe, "--login", None, None);
+    after(s.code);
+    if s.code == EXIT_LOGIN_OK {
+        let user = s.login_user.as_deref().and_then(|n| account::users(Path::new("/")).into_iter().find(|u| u.name == n));
+        match user {
+            Some(u) => { let sh = stage(exe, "--shell", Some(&u), None); after(sh.code); }
+            None => { console_line("EXEC85_SUPERVISOR login succeeded but the user vanished"); thread::sleep(Duration::from_secs(2)); }
+        }
+    } else { thread::sleep(Duration::from_secs(2)); }
+}
+
 pub fn run() -> ! {
     let exe = exe_path();
     let live = cmdline_has("exec85.live");
     console_line(&format!("EXEC85_SUPERVISOR start mode={}", if live { "live" } else { "installed" }));
+    if !live { loop { login_cycle(&exe); } }
     loop {
-        if live {
-            let s = stage(&exe, "--installer", None, None);
-            after(s.code);
-            if s.code == EXIT_TRY_LIVE {
-                let sh = stage(&exe, "--shell", None, Some("/"));
-                after(sh.code);
-            } else if s.code != EXIT_LOGOUT { thread::sleep(Duration::from_secs(2)); }
-        } else {
-            let s = stage(&exe, "--login", None, None);
-            after(s.code);
-            if s.code == EXIT_LOGIN_OK {
-                let user = s.login_user.as_deref().and_then(|n| account::users(Path::new("/")).into_iter().find(|u| u.name == n));
-                match user {
-                    Some(u) => { let sh = stage(&exe, "--shell", Some(&u), None); after(sh.code); }
-                    None => { console_line("EXEC85_SUPERVISOR login succeeded but the user vanished"); thread::sleep(Duration::from_secs(2)); }
-                }
-            } else { thread::sleep(Duration::from_secs(2)); }
-        }
+        let s = stage(&exe, "--installer", None, None);
+        after(s.code);
+        if s.code == EXIT_SETUP_DONE { loop { login_cycle(&exe); } } // TESTING-ONLY
+        if s.code == EXIT_TRY_LIVE {
+            let sh = stage(&exe, "--shell", None, Some("/"));
+            after(sh.code);
+        } else if s.code != EXIT_LOGOUT { thread::sleep(Duration::from_secs(2)); }
     }
 }

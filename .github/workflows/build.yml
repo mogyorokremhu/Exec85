@@ -26,6 +26,7 @@ jobs:
           name: exec85-iso
           path: |
             out/exec85.iso
+            out/exec85-testing.iso
             out/sizes.txt
 
   boot-test:
@@ -46,7 +47,7 @@ jobs:
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; KVM="--device /dev/kvm"; echo "KVM available"; else echo "no KVM: software emulation (TCG)"; fi
           mkdir -p results
           docker run --rm $KVM -v "$PWD":/src -w /src alpine:3.22 sh -c \
-            "apk add --no-cache qemu-system-x86_64 qemu-hw-display-virtio-vga ovmf python3 >/dev/null && python3 scripts/boot-test.py out/exec85.iso ${{ matrix.firmware }} results"
+            "apk add --no-cache qemu-system-x86_64 qemu-hw-display-virtio-vga ovmf python3 >/dev/null && python3 scripts/boot-test.py out/exec85.iso ${{ matrix.firmware }} results && python3 scripts/boot-test.py out/exec85-testing.iso ${{ matrix.firmware }} results-testing --testing"
       - name: Summary
         if: always()
         run: |
@@ -57,4 +58,5 @@ jobs:
           name: boot-${{ matrix.firmware }}
           path: |
             results/
+            results-testing/
             !results/disk-*.img

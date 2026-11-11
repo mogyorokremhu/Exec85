@@ -77,28 +77,36 @@ echo "==> packing the initramfs"
 (cd "$R" && find . | cpio -o -H newc 2>/dev/null | gzip -9) > "$W/initramfs"
 ls -l "$W/vmlinuz" "$W/initramfs"
 
-echo "==> building the bootable ISO (BIOS + UEFI)"
-ISO=$W/iso
-rm -rf "${ISO:?}"; mkdir -p "$ISO/boot/limine" "$ISO/EFI/BOOT"
-cp "$W/vmlinuz" "$ISO/boot/vmlinuz"
-cp "$W/initramfs" "$ISO/boot/initramfs"
-sed "s|@CMDLINE@|$CMDLINE|" "$SRC/image/boot/limine.conf" > "$ISO/boot/limine/limine.conf"
+echo "==> building the bootable ISOs (BIOS + UEFI): normal and testing"
 for f in limine-bios.sys limine-bios-cd.bin limine-uefi-cd.bin BOOTX64.EFI; do [ -n "$(findone $f)" ] || { echo "ERROR: $f not found"; exit 1; }; done
-cp "$(findone limine-bios.sys)" "$(findone limine-bios-cd.bin)" "$(findone limine-uefi-cd.bin)" "$ISO/boot/limine/"
-cp "$(findone BOOTX64.EFI)" "$ISO/EFI/BOOT/"
 mkdir -p "$OUT"
-xorriso -as mkisofs -R -r -J \
-    -b boot/limine/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
-    --efi-boot boot/limine/limine-uefi-cd.bin -efi-boot-part --efi-boot-image --protective-msdos-label \
-    "$ISO" -o "$OUT/exec85.iso" 2>&1 | tail -3
-limine bios-install "$OUT/exec85.iso"
+# Same system image twice; only the kernel command line differs. The TESTING flavor adds "exec85.testing",
+# which makes the installer offer "Skip installation" (set up in memory). It is released separately.
+make_iso() {
+    name=$1; cmdline=$2
+    ISO=$W/iso-$name
+    rm -rf "${ISO:?}"; mkdir -p "$ISO/boot/limine" "$ISO/EFI/BOOT"
+    cp "$W/vmlinuz" "$ISO/boot/vmlinuz"
+    cp "$W/initramfs" "$ISO/boot/initramfs"
+    sed "s|@CMDLINE@|$cmdline|" "$SRC/image/boot/limine.conf" > "$ISO/boot/limine/limine.conf"
+    cp "$(findone limine-bios.sys)" "$(findone limine-bios-cd.bin)" "$(findone limine-uefi-cd.bin)" "$ISO/boot/limine/"
+    cp "$(findone BOOTX64.EFI)" "$ISO/EFI/BOOT/"
+    xorriso -as mkisofs -R -r -J \
+        -b boot/limine/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
+        --efi-boot boot/limine/limine-uefi-cd.bin -efi-boot-part --efi-boot-image --protective-msdos-label \
+        "$ISO" -o "$OUT/$name" 2>&1 | tail -3
+    limine bios-install "$OUT/$name"
+}
+make_iso exec85.iso "$CMDLINE"
+make_iso exec85-testing.iso "$CMDLINE exec85.testing"
 
 {
   echo "iso_bytes=$(stat -c %s "$OUT/exec85.iso")"
+  echo "testing_iso_bytes=$(stat -c %s "$OUT/exec85-testing.iso")"
   echo "binary_bytes=$(stat -c %s "$BIN")"
   echo "rootfs_kb=$ROOTFS_KB"
   echo "initramfs_bytes=$(stat -c %s "$W/initramfs")"
   echo "kernel_bytes=$(stat -c %s "$W/vmlinuz")"
 } > "$OUT/sizes.txt"
 cat "$OUT/sizes.txt"
-echo "==> done: $OUT/exec85.iso"
+echo "==> done: $OUT/exec85.iso and $OUT/exec85-testing.iso"

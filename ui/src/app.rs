@@ -1,5 +1,7 @@
 //! The shell's state and behaviour: menus, dialogs, focus, drives, the file list.
 //! Nothing here touches the screen or the keyboard device, so it is easy to test.
+use crate::apps::Kind;
+use crate::fileops;
 use crate::fs::{self, Drive, Entry, Sort};
 use crate::gfx::Mode;
 use crate::keys::{code, Key};
@@ -12,31 +14,39 @@ pub const DRIVE_H: usize = 4;
 pub const WIN_Y: usize = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Focus { Drives, Files, Details }
+pub enum Focus { Drives, Files, Details, App(usize) }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Act {
-    Open, Parent, Refresh, Logout, Reboot, PowerOff,
+    Open, Parent, Refresh, NewFile, NewFolder, Rename, Delete, Copy, Cut, Paste, Logout, Reboot, PowerOff,
+    OpenApp(Kind), NextWindow, CloseWindow,
     Dark, Light, SortName, SortSize, SortDate, Hidden,
     NextPane, Stacked, Details,
     Keys, About, Sep,
 }
 
-/// Things the shell asks the outside world to do.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Effect { PowerOff, Reboot, Logout, SaveTheme(Mode) }
+/// Things the shell asks the outside world (or the window manager) to do.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Effect { PowerOff, Reboot, Logout, SaveTheme(Mode), OpenApp(Kind), OpenFile(PathBuf), CloseWindow(usize) }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Dialog { Confirm(Act), Keys, About }
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PromptKind { NewFile, NewFolder, Rename(String) }
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Dialog { Confirm(Act), Prompt(PromptKind, String), Keys, About }
 
 pub struct Item { pub label: &'static str, pub hint: &'static str, pub act: Act }
 pub struct MenuDef { pub title: &'static str, pub hot: char, pub items: &'static [Item] }
 
 const fn it(label: &'static str, hint: &'static str, act: Act) -> Item { Item { label, hint, act } }
 
-pub const MENUS: [MenuDef; 4] = [
+pub const MENUS: [MenuDef; 5] = [
     MenuDef { title: "File", hot: 'f', items: &[
         it("Open", "Enter", Act::Open), it("Parent folder", "Backspace", Act::Parent), it("Refresh", "F5", Act::Refresh),
+        it("", "", Act::Sep),
+        it("New file", "Ctrl+N", Act::NewFile), it("New folder", "F7", Act::NewFolder), it("Rename", "F2", Act::Rename), it("Delete", "Del", Act::Delete),
+        it("", "", Act::Sep),
+        it("Copy", "Ctrl+C", Act::Copy), it("Cut", "Ctrl+X", Act::Cut), it("Paste", "Ctrl+V", Act::Paste),
         it("", "", Act::Sep), it("Log out", "", Act::Logout), it("Restart", "", Act::Reboot), it("Shut down", "", Act::PowerOff),
     ]},
     MenuDef { title: "View", hot: 'v', items: &[
@@ -44,7 +54,15 @@ pub const MENUS: [MenuDef; 4] = [
         it("Sort by name", "", Act::SortName), it("Sort by size", "", Act::SortSize), it("Sort by date", "", Act::SortDate),
         it("", "", Act::Sep), it("Show hidden files", "Ctrl+H", Act::Hidden),
     ]},
+    MenuDef { title: "Apps", hot: 'a', items: &[
+        it("Notepad", "", Act::OpenApp(Kind::Notepad)), it("Terminal (Cmd)", "", Act::OpenApp(Kind::Terminal)),
+        it("Paint", "", Act::OpenApp(Kind::Paint)), it("System monitor", "", Act::OpenApp(Kind::Monitor)),
+        it("Disk usage", "", Act::OpenApp(Kind::DiskUsage)), it("Network", "", Act::OpenApp(Kind::Network)),
+        it("Clock and calendar", "", Act::OpenApp(Kind::Clock)), it("Calculator", "", Act::OpenApp(Kind::Calculator)),
+        it("Reversi", "", Act::OpenApp(Kind::Reversi)), it("Snake", "", Act::OpenApp(Kind::Snake)),
+    ]},
     MenuDef { title: "Window", hot: 'w', items: &[
+        it("Next window", "F6", Act::NextWindow), it("Close window", "F4", Act::CloseWindow), it("", "", Act::Sep),
         it("Next pane", "Tab", Act::NextPane), it("Stack panes", "Ctrl+L", Act::Stacked), it("Details pane", "Ctrl+D", Act::Details),
     ]},
     MenuDef { title: "Help", hot: 'h', items: &[
@@ -76,6 +94,10 @@ pub struct App {
     pub details: bool,
     pub menu: Option<MenuState>,
     pub dialog: Option<Dialog>,
+    /// How many app windows are open next to the Explorer (the shell keeps this up to date).
+    pub app_count: usize,
+    /// Copied or cut item: (path, is_cut).
+    pub clipboard: Option<(PathBuf, bool)>,
     /// One-line message for the status bar (errors, hints); cleared by the next key.
     pub msg: Option<String>,
 }
@@ -85,7 +107,7 @@ impl App {
         let mut a = App {
             cols, rows, mode, drives: fs::drives(), drive_cursor: 0, cwd: PathBuf::from("/"), entries: Vec::new(),
             sel: 0, top: 0, sort: Sort::Name, show_hidden: false, focus: Focus::Files, stacked: false, details: true,
-            menu: None, dialog: None, msg: None,
+            menu: None, dialog: None, app_count: 0, clipboard: None, msg: None,
         };
         if !a.open_dir(start, None) { a.open_dir(PathBuf::from("/"), None); a.msg = None; }
         a
@@ -94,18 +116,39 @@ impl App {
     // ---- geometry -------------------------------------------------------
 
     /// Where each window sits. They tile the area between the drive row and the status bar.
+    /// Without apps: Files and Details. With apps: the Explorer takes one side (Files over Details)
+    /// and the app windows share the other; "stack panes" swaps the two directions.
     pub fn tiles(&self) -> Vec<(Win, Rect)> {
         let area = Rect { x: 0, y: WIN_Y, w: self.cols, h: self.rows.saturating_sub(WIN_Y + 1) };
-        let root = if self.details {
-            Node::Split {
-                dir: if self.stacked { Dir::Stacked } else { Dir::SideBySide },
-                pct: if self.stacked { 62 } else { 64 },
-                a: Box::new(Node::Leaf(Win::Files)), b: Box::new(Node::Leaf(Win::Details)),
-            }
-        } else { Node::Leaf(Win::Files) };
+        let main = if self.stacked { Dir::Stacked } else { Dir::SideBySide };
+        let other = if self.stacked { Dir::SideBySide } else { Dir::Stacked };
+        let leaf = |w: Win| Box::new(Node::Leaf(w));
+        let root = if self.app_count == 0 {
+            if self.details { Node::Split { dir: main, pct: if self.stacked { 62 } else { 64 }, a: leaf(Win::Files), b: leaf(Win::Details) } } else { Node::Leaf(Win::Files) }
+        } else {
+            // The app windows share their half of the screen: 1 = whole area, 2 = split in two,
+            // 3 = one tall window beside two stacked ones, 4 = a 2x2 grid.
+            let leaf_app = |i: usize| Box::new(Node::Leaf(Win::App(i)));
+            let pair = |dir: Dir, a: usize, b: usize| Node::Split { dir, pct: 50, a: leaf_app(a), b: leaf_app(b) };
+            let apps = match self.app_count {
+                1 => Node::Leaf(Win::App(0)),
+                2 => pair(other, 0, 1),
+                3 => Node::Split { dir: Dir::SideBySide, pct: 50, a: leaf_app(0), b: Box::new(pair(Dir::Stacked, 1, 2)) },
+                _ => Node::Split { dir: Dir::SideBySide, pct: 50, a: Box::new(pair(Dir::Stacked, 0, 1)), b: Box::new(pair(Dir::Stacked, 2, 3)) },
+            };
+            let explorer = if self.details { Node::Split { dir: other, pct: 70, a: leaf(Win::Files), b: leaf(Win::Details) } } else { Node::Leaf(Win::Files) };
+            Node::Split { dir: main, pct: 36, a: Box::new(explorer), b: Box::new(apps) }
+        };
         let mut out = Vec::new();
         root.tiles(area, &mut out);
         out
+    }
+
+    /// The shell tells us how many app windows exist; focus must not point at a closed one.
+    pub fn set_app_count(&mut self, n: usize) {
+        self.app_count = n;
+        if let Focus::App(i) = self.focus { if i >= n { self.focus = Focus::Files; } }
+        self.fix_scroll();
     }
 
     /// Where menu `i`'s title starts on the menu bar (in cells).
@@ -160,11 +203,70 @@ impl App {
         if !self.open_dir(cwd, keep) { self.go_parent(); }
     }
 
-    fn activate(&mut self) {
-        let Some(e) = self.selected().cloned() else { return };
+    fn activate(&mut self) -> Option<Effect> {
+        let e = self.selected().cloned()?;
         if e.is_parent { self.go_parent(); }
         else if e.is_dir { self.open_dir(self.cwd.join(&e.name), None); }
-        else { self.msg = Some("No app can open files yet (Notepad arrives in a later release).".into()); }
+        else { return Some(Effect::OpenFile(self.cwd.join(&e.name))); }
+        None
+    }
+
+    // ---- file operations --------------------------------------------------
+
+    fn selected_item(&self) -> Option<Entry> { self.selected().filter(|e| !e.is_parent).cloned() }
+
+    fn do_prompt(&mut self, kind: PromptKind, text: &str) {
+        let cwd = self.cwd.clone();
+        let result = match &kind {
+            PromptKind::NewFile => fileops::create_file(&cwd, text),
+            PromptKind::NewFolder => fileops::create_dir(&cwd, text),
+            PromptKind::Rename(old) => fileops::rename(&cwd, old, text),
+        };
+        match result {
+            Ok(p) => { let name = p.file_name().map(|n| n.to_string_lossy().into_owned()); self.open_dir(cwd, name); }
+            Err(e) => self.msg = Some(e),
+        }
+    }
+
+    fn do_delete(&mut self) {
+        let Some(e) = self.selected_item() else { return };
+        match fileops::delete(&self.cwd.join(&e.name)) {
+            Ok(()) => { let cwd = self.cwd.clone(); self.open_dir(cwd, None); self.msg = Some(format!("Deleted {}", e.name)); }
+            Err(m) => self.msg = Some(m),
+        }
+    }
+
+    fn do_copy(&mut self, cut: bool) {
+        let Some(e) = self.selected_item() else { return };
+        self.clipboard = Some((self.cwd.join(&e.name), cut));
+        self.msg = Some(format!("{} {}", if cut { "Cut" } else { "Copied" }, e.name));
+    }
+
+    fn do_paste(&mut self) {
+        let Some((src, cut)) = self.clipboard.clone() else { self.msg = Some("Nothing to paste. Copy or cut something first.".into()); return };
+        match fileops::paste(&src, &self.cwd, cut) {
+            Ok(p) => {
+                if cut { self.clipboard = None; }
+                let name = p.file_name().map(|n| n.to_string_lossy().into_owned());
+                let cwd = self.cwd.clone();
+                self.open_dir(cwd, name);
+            }
+            Err(e) => self.msg = Some(e),
+        }
+    }
+
+    /// Move the keyboard focus between the Explorer and the app windows (F6).
+    fn cycle_window(&mut self, step: isize) {
+        let n = self.app_count as isize + 1;
+        let cur = match self.focus { Focus::App(i) => i as isize + 1, _ => 0 };
+        let next = (cur + step).rem_euclid(n);
+        self.focus = if next == 0 { Focus::Files } else { Focus::App(next as usize - 1) };
+    }
+
+    /// Keys that always belong to the shell, even when an app window has the focus.
+    pub fn is_global(k: &Key) -> bool {
+        if matches!(k.code, code::F1 | code::F4 | code::F6 | code::F10) { return true; }
+        k.alt && !k.ctrl && k.base_char().map_or(false, |c| MENUS.iter().any(|m| m.hot == c))
     }
 
     fn move_sel(&mut self, delta: isize) {
@@ -219,9 +321,19 @@ impl App {
 
     fn run(&mut self, act: Act) -> Option<Effect> {
         match act {
-            Act::Open => self.activate(),
+            Act::Open => return self.activate(),
             Act::Parent => self.go_parent(),
             Act::Refresh => self.refresh(),
+            Act::NewFile => self.dialog = Some(Dialog::Prompt(PromptKind::NewFile, String::new())),
+            Act::NewFolder => self.dialog = Some(Dialog::Prompt(PromptKind::NewFolder, String::new())),
+            Act::Rename => if let Some(e) = self.selected_item() { self.dialog = Some(Dialog::Prompt(PromptKind::Rename(e.name.clone()), e.name)); },
+            Act::Delete => if self.selected_item().is_some() { self.dialog = Some(Dialog::Confirm(Act::Delete)); },
+            Act::Copy => self.do_copy(false),
+            Act::Cut => self.do_copy(true),
+            Act::Paste => self.do_paste(),
+            Act::OpenApp(kind) => return Some(Effect::OpenApp(kind)),
+            Act::NextWindow => self.cycle_window(1),
+            Act::CloseWindow => if let Focus::App(i) = self.focus { return Some(Effect::CloseWindow(i)); } else { self.msg = Some("Only app windows can be closed.".into()); },
             Act::Logout => return Some(Effect::Logout),
             Act::Reboot | Act::PowerOff => self.dialog = Some(Dialog::Confirm(act)),
             Act::Dark => { self.mode = Mode::Dark; return Some(Effect::SaveTheme(Mode::Dark)); }
@@ -246,7 +358,7 @@ impl App {
 
     pub fn handle(&mut self, k: Key) -> Option<Effect> {
         self.msg = None;
-        if let Some(d) = self.dialog { return self.handle_dialog(d, k); }
+        if let Some(d) = self.dialog.clone() { return self.handle_dialog(d, k); }
         if self.menu.is_some() { return self.handle_menu(k); }
 
         // Alt+letter opens a menu; F10 opens the first one.
@@ -262,11 +374,21 @@ impl App {
                 return None;
             }
         }
+        match k.code {
+            code::F6 => { self.cycle_window(if k.shift { -1 } else { 1 }); return None; }
+            code::F4 => return self.run(Act::CloseWindow),
+            _ => {}
+        }
         if k.ctrl {
+            if matches!(self.focus, Focus::App(_)) { return None; }
             match k.base_char() {
                 Some('h') => return self.run(Act::Hidden),
                 Some('l') => return self.run(Act::Stacked),
                 Some('d') => return self.run(Act::Details),
+                Some('n') => return self.run(Act::NewFile),
+                Some('c') => return self.run(Act::Copy),
+                Some('x') => return self.run(Act::Cut),
+                Some('v') => return self.run(Act::Paste),
                 _ => return None,
             }
         }
@@ -274,7 +396,7 @@ impl App {
             code::F10 => { self.menu = Some(MenuState { menu: 0, item: first_item(0) }); return None; }
             code::F1 => return self.run(Act::Keys),
             code::F5 => return self.run(Act::Refresh),
-            code::TAB => { self.next_pane(if k.shift { -1 } else { 1 }); return None; }
+            code::TAB if !matches!(self.focus, Focus::App(_)) => { self.next_pane(if k.shift { -1 } else { 1 }); return None; }
             _ => {}
         }
         match self.focus {
@@ -285,8 +407,11 @@ impl App {
                 code::PGDN => self.move_sel(self.list_rows() as isize),
                 code::HOME => self.move_sel(isize::MIN / 2),
                 code::END => self.move_sel(isize::MAX / 2),
-                code::ENTER | code::RIGHT => self.activate(),
+                code::ENTER | code::RIGHT => return self.activate(),
                 code::BACKSPACE | code::LEFT => self.go_parent(),
+                code::F2 => return self.run(Act::Rename),
+                code::F7 => return self.run(Act::NewFolder),
+                code::DELETE => return self.run(Act::Delete),
                 _ => if let Some(c) = k.ch() { if c.is_ascii_graphic() { self.jump_to_letter(c); } },
             },
             Focus::Drives => match k.code {
@@ -297,7 +422,7 @@ impl App {
                 code::ENTER | code::DOWN => { self.go_to_drive(); self.focus = Focus::Files; }
                 _ => {}
             },
-            Focus::Details => {}
+            Focus::Details | Focus::App(_) => {}
         }
         None
     }
@@ -350,9 +475,26 @@ impl App {
             Dialog::Confirm(act) => {
                 if k.code == code::ENTER || c == Some('y') {
                     self.dialog = None;
-                    return Some(if act == Act::Reboot { Effect::Reboot } else { Effect::PowerOff });
+                    match act {
+                        Act::Reboot => return Some(Effect::Reboot),
+                        Act::PowerOff => return Some(Effect::PowerOff),
+                        Act::Delete => self.do_delete(),
+                        _ => {}
+                    }
+                    return None;
                 }
                 if k.code == code::ESC || c == Some('n') { self.dialog = None; }
+            }
+            Dialog::Prompt(kind, mut text) => {
+                match k.code {
+                    code::ESC => self.dialog = None,
+                    code::ENTER => { self.dialog = None; self.do_prompt(kind, &text); }
+                    code::BACKSPACE => { text.pop(); self.dialog = Some(Dialog::Prompt(kind, text)); }
+                    _ => {
+                        if let Some(ch) = k.ch() { if text.chars().count() < 120 { text.push(ch); } }
+                        self.dialog = Some(Dialog::Prompt(kind, text));
+                    }
+                }
             }
             Dialog::Keys | Dialog::About => {
                 if matches!(k.code, code::ESC | code::ENTER | code::SPACE | code::F1) { self.dialog = None; }
@@ -366,11 +508,15 @@ impl App {
     pub fn state_line(&self) -> String {
         let clean = |s: &str| s.replace(' ', "_");
         let menu = self.menu.map_or("none".to_string(), |m| MENUS[m.menu].title.to_lowercase());
-        let dialog = match self.dialog { None => "none".to_string(), Some(d) => format!("{d:?}").to_lowercase() };
+        let dialog = match &self.dialog {
+            None => "none".to_string(),
+            Some(Dialog::Prompt(kind, _)) => format!("prompt_{}", match kind { PromptKind::NewFile => "newfile", PromptKind::NewFolder => "newfolder", PromptKind::Rename(_) => "rename" }),
+            Some(d) => format!("{d:?}").to_lowercase(),
+        };
         format!(
             "EXEC85_STATE dir={} index={} name={} count={} drive={} focus={} menu={} item={} dialog={} theme={} sort={} hidden={} layout={} details={}",
             clean(&self.cwd.to_string_lossy()), self.sel, clean(self.selected().map_or("-", |e| e.name.as_str())), self.entries.len(),
-            self.current_drive(), format!("{:?}", self.focus).to_lowercase(), menu, self.menu.map_or(0, |m| m.item), dialog.replace(['(', ')'], "_"),
+            self.current_drive(), match self.focus { Focus::App(i) => format!("app{i}"), f => format!("{f:?}").to_lowercase() }, menu, self.menu.map_or(0, |m| m.item), dialog.replace(['(', ')'], "_"),
             if self.mode == Mode::Dark { "dark" } else { "light" }, format!("{:?}", self.sort).to_lowercase(), self.show_hidden,
             if self.stacked { "stacked" } else { "side" }, self.details,
         )
@@ -573,6 +719,102 @@ mod tests {
         assert!(!a.open_dir(root.join("does-not-exist"), None));
         assert_eq!(a.cwd, root);
         assert!(a.msg.as_deref().unwrap().starts_with("Cannot open"));
+        let _ = stdfs::remove_dir_all(&root);
+    }
+
+
+    #[test]
+    fn creating_renaming_and_deleting_through_the_keyboard() {
+        let root = tree("fileops");
+        let mut a = app(&root);
+        // new folder: F7, type a name, Enter
+        press(&mut a, "f7");
+        assert!(matches!(a.dialog, Some(Dialog::Prompt(PromptKind::NewFolder, _))));
+        for c in "docs".chars() { a.handle(parse_key(&c.to_string()).unwrap()); }
+        press(&mut a, "enter");
+        assert!(root.join("docs").is_dir());
+        assert_eq!(a.selected().unwrap().name, "docs", "the new item is selected");
+        // new file: Ctrl+N
+        press(&mut a, "ctrl-n");
+        for c in "todo.txt".chars() { a.handle(parse_key(&c.to_string()).unwrap()); }
+        press(&mut a, "enter");
+        assert!(root.join("todo.txt").is_file());
+        // rename it: F2 starts with the old name filled in
+        press(&mut a, "f2");
+        assert_eq!(a.dialog, Some(Dialog::Prompt(PromptKind::Rename("todo.txt".into()), "todo.txt".into())));
+        for _ in 0..8 { press(&mut a, "backspace"); }
+        for c in "plan.md".chars() { a.handle(parse_key(&c.to_string()).unwrap()); }
+        press(&mut a, "enter");
+        assert!(root.join("plan.md").is_file() && !root.join("todo.txt").exists());
+        // a bad name is refused and nothing changes
+        press(&mut a, "f7,a,/,b,enter");
+        assert!(a.msg.is_some());
+        assert!(!root.join("a").exists());
+        // delete asks first
+        press(&mut a, "delete");
+        assert_eq!(a.dialog, Some(Dialog::Confirm(Act::Delete)));
+        press(&mut a, "n");
+        assert!(root.join("plan.md").exists());
+        press(&mut a, "delete,y");
+        assert!(!root.join("plan.md").exists());
+        let _ = stdfs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copy_cut_and_paste() {
+        let root = tree("paste");
+        let mut a = app(&root);
+        press(&mut a, "z");                         // Zed.txt
+        press(&mut a, "ctrl-c");
+        press(&mut a, "down,down");                 // wraps? stays at the end: fine
+        press(&mut a, "ctrl-v");
+        assert!(root.join("Zed (copy).txt").exists(), "paste into the same folder gets a new name");
+        // cut a file and paste it into a folder
+        press(&mut a, "r");                         // readme.txt
+        press(&mut a, "ctrl-x");
+        press(&mut a, "a,enter");                   // into alpha/
+        assert_eq!(a.cwd, root.join("alpha"));
+        press(&mut a, "ctrl-v");
+        assert!(root.join("alpha/readme.txt").exists() && !root.join("readme.txt").exists());
+        press(&mut a, "ctrl-v");
+        assert!(a.msg.as_deref().unwrap().contains("Nothing to paste"), "a cut item is pasted only once");
+        let _ = stdfs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enter_on_a_file_asks_for_it_to_be_opened() {
+        let root = tree("openfile");
+        let mut a = app(&root);
+        press(&mut a, "r");
+        assert_eq!(a.handle(parse_key("enter").unwrap()), Some(Effect::OpenFile(root.join("readme.txt"))));
+        // the Apps menu asks for apps
+        press(&mut a, "alt-a");
+        assert_eq!(a.menu.unwrap().menu, 2);
+        assert_eq!(a.handle(parse_key("enter").unwrap()), Some(Effect::OpenApp(Kind::Notepad)));
+        let _ = stdfs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn explorer_leaves_room_for_app_windows_without_overlap() {
+        let root = tree("tiles");
+        let mut a = app(&root);
+        for n in 0..=4 {
+            a.set_app_count(n);
+            for stacked in [false, true] {
+                a.stacked = stacked;
+                for details in [false, true] {
+                    a.details = details;
+                    let t = a.tiles();
+                    let total: usize = t.iter().map(|(_, r)| r.w * r.h).sum();
+                    assert_eq!(total, a.cols * (a.rows - WIN_Y - 1), "n={n} stacked={stacked} details={details}");
+                    assert_eq!(t.len(), n + if details { 2 } else { 1 });
+                }
+            }
+        }
+        a.set_app_count(2);
+        a.focus = Focus::App(1);
+        a.set_app_count(1);
+        assert_eq!(a.focus, Focus::Files, "focus never points at a closed window");
         let _ = stdfs::remove_dir_all(&root);
     }
 
