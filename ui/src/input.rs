@@ -6,13 +6,13 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Read;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::{thread, time::Duration};
 
 const EV_KEY: u16 = 1;
 // bit flags for held modifier keys
-const LSHIFT: u8 = 1; const RSHIFT: u8 = 2; const LCTRL: u8 = 4; const RCTRL: u8 = 8; const LALT: u8 = 16; const RALT: u8 = 32;
+const LSHIFT: u8 = 1; const RSHIFT: u8 = 2; const LCTRL: u8 = 4; const RCTRL: u8 = 8; const LALT: u8 = 16; const RALT: u8 = 32; // right Alt = AltGr
 
 fn modifier_bit(code: u16) -> Option<u8> {
     match code { 42 => Some(LSHIFT), 54 => Some(RSHIFT), 29 => Some(LCTRL), 97 => Some(RCTRL), 56 => Some(LALT), 100 => Some(RALT), _ => None }
@@ -21,6 +21,12 @@ fn modifier_bit(code: u16) -> Option<u8> {
 /// Start watching input devices. Key presses (and auto-repeats) arrive on the returned channel.
 pub fn spawn() -> Receiver<Key> {
     let (tx, rx) = channel();
+    spawn_with(Arc::new(move |k| tx.send(k).is_ok()));
+    rx
+}
+
+/// Like `spawn`, but each key is handed to `sink`, which returns false when nobody is listening any more.
+pub fn spawn_with(sink: Arc<dyn Fn(Key) -> bool + Send + Sync>) {
     let mods = Arc::new(AtomicU8::new(0));
     let open: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     thread::spawn(move || loop {
@@ -33,17 +39,16 @@ pub fn spawn() -> Receiver<Key> {
                 if let Ok(f) = File::open(e.path()) {
                     set.insert(name.clone());
                     drop(set);
-                    let (tx, mods, open) = (tx.clone(), mods.clone(), open.clone());
-                    thread::spawn(move || { read_device(f, &tx, &mods); open.lock().unwrap().remove(&name); });
+                    let (sink, mods, open) = (sink.clone(), mods.clone(), open.clone());
+                    thread::spawn(move || { read_device(f, &*sink, &mods); open.lock().unwrap().remove(&name); });
                 }
             }
         }
         thread::sleep(Duration::from_secs(2));
     });
-    rx
 }
 
-fn read_device(mut f: File, tx: &Sender<Key>, mods: &AtomicU8) {
+fn read_device(mut f: File, sink: &(dyn Fn(Key) -> bool + Send + Sync), mods: &AtomicU8) {
     // struct input_event on x86_64: 16 bytes of time, u16 type, u16 code, i32 value = 24 bytes
     let mut buf = [0u8; 24 * 32];
     loop {
@@ -64,8 +69,8 @@ fn read_device(mut f: File, tx: &Sender<Key>, mods: &AtomicU8) {
             }
             if value == 1 || value == 2 { // press or auto-repeat
                 let m = mods.load(Ordering::SeqCst);
-                let key = Key { code, shift: m & (LSHIFT | RSHIFT) != 0, ctrl: m & (LCTRL | RCTRL) != 0, alt: m & (LALT | RALT) != 0 };
-                if tx.send(key).is_err() { return; }
+                let key = Key { code, shift: m & (LSHIFT | RSHIFT) != 0, ctrl: m & (LCTRL | RCTRL) != 0, alt: m & LALT != 0, altgr: m & RALT != 0 };
+                if !sink(key) { return; }
             }
         }
     }

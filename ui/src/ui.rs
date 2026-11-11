@@ -2,64 +2,8 @@
 use crate::app::{self, Act, App, Dialog, Focus, DRIVE_H, DRIVE_Y, MENUS};
 use crate::fs::{fmt_size, fmt_time, mode_string};
 use crate::gfx::{Canvas, Metrics, Theme};
+use crate::paint::{tail, Painter};
 use crate::layout::{Rect, Win};
-
-struct Painter<'a> { c: &'a mut Canvas, m: Metrics, t: Theme }
-
-impl Painter<'_> {
-    fn cells(&mut self, col: usize, row: usize, w: usize, h: usize, color: u32) {
-        self.c.fill_rect(col * self.m.cw, row * self.m.ch, w * self.m.cw, h * self.m.ch, color);
-    }
-
-    /// Text starting at a cell; `bg` fills each character's cell first.
-    fn text(&mut self, col: usize, row: usize, s: &str, fg: u32, bg: Option<u32>) {
-        for (i, ch) in s.chars().enumerate() {
-            let (x, y) = ((col + i) * self.m.cw, row * self.m.ch);
-            if let Some(b) = bg { self.c.fill_rect(x, y, self.m.cw, self.m.ch, b); }
-            // one font pixel of margin above the glyph
-            if ch != ' ' { self.c.glyph(x, y + self.m.scale, ch, self.m.scale, fg); }
-        }
-    }
-
-    /// Text cut to `w` cells and padded with the background colour.
-    fn clip(&mut self, col: usize, row: usize, w: usize, s: &str, fg: u32, bg: u32) {
-        let shown: String = s.chars().take(w).collect();
-        self.cells(col, row, w, 1, bg);
-        self.text(col, row, &shown, fg, None);
-    }
-
-    fn right(&mut self, col: usize, row: usize, w: usize, s: &str, fg: u32, bg: u32) {
-        let n = s.chars().count().min(w);
-        let tail: String = s.chars().skip(s.chars().count() - n).collect();
-        self.cells(col, row, w, 1, bg);
-        self.text(col + w - n, row, &tail, fg, None);
-    }
-
-    fn outline(&mut self, r: Rect, color: u32) {
-        let m = self.m;
-        self.c.outline(r.x * m.cw, r.y * m.ch, r.w * m.cw, r.h * m.ch, m.scale, color);
-    }
-
-    fn underline(&mut self, col: usize, row: usize, color: u32) {
-        let m = self.m;
-        self.c.fill_rect(col * m.cw, row * m.ch + 9 * m.scale, 5 * m.scale, m.scale, color);
-    }
-
-    /// A tiled window: panel, title bar, border. Returns the content area (one cell in from the border).
-    fn window(&mut self, r: Rect, title: &str, active: bool) -> Rect {
-        let t = self.t;
-        self.cells(r.x, r.y, r.w, r.h, t.panel);
-        let (bg, fg) = if active { (t.title_on, t.title_on_text) } else { (t.title_off, t.title_off_text) };
-        self.clip(r.x, r.y, r.w, &format!(" {title}"), fg, bg);
-        self.outline(r, if active { t.title_on } else { t.border });
-        Rect { x: r.x + 1, y: r.y + 1, w: r.w.saturating_sub(2), h: r.h.saturating_sub(2) }
-    }
-}
-
-fn tail(s: &str, max: usize) -> String {
-    let n = s.chars().count();
-    if n <= max { s.to_string() } else if max > 3 { format!("...{}", s.chars().skip(n - (max - 3)).collect::<String>()) } else { s.chars().skip(n - max).collect() }
-}
 
 pub fn draw(app: &App, c: &mut Canvas, m: &Metrics) {
     let t = Theme::new(app.mode);

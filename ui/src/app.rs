@@ -16,7 +16,7 @@ pub enum Focus { Drives, Files, Details }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Act {
-    Open, Parent, Refresh, Reboot, PowerOff,
+    Open, Parent, Refresh, Logout, Reboot, PowerOff,
     Dark, Light, SortName, SortSize, SortDate, Hidden,
     NextPane, Stacked, Details,
     Keys, About, Sep,
@@ -24,7 +24,7 @@ pub enum Act {
 
 /// Things the shell asks the outside world to do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Effect { PowerOff, Reboot, SaveTheme(Mode) }
+pub enum Effect { PowerOff, Reboot, Logout, SaveTheme(Mode) }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Dialog { Confirm(Act), Keys, About }
@@ -37,7 +37,7 @@ const fn it(label: &'static str, hint: &'static str, act: Act) -> Item { Item { 
 pub const MENUS: [MenuDef; 4] = [
     MenuDef { title: "File", hot: 'f', items: &[
         it("Open", "Enter", Act::Open), it("Parent folder", "Backspace", Act::Parent), it("Refresh", "F5", Act::Refresh),
-        it("", "", Act::Sep), it("Restart", "", Act::Reboot), it("Shut down", "", Act::PowerOff),
+        it("", "", Act::Sep), it("Log out", "", Act::Logout), it("Restart", "", Act::Reboot), it("Shut down", "", Act::PowerOff),
     ]},
     MenuDef { title: "View", hot: 'v', items: &[
         it("Dark theme", "", Act::Dark), it("Light theme", "", Act::Light), it("", "", Act::Sep),
@@ -222,6 +222,7 @@ impl App {
             Act::Open => self.activate(),
             Act::Parent => self.go_parent(),
             Act::Refresh => self.refresh(),
+            Act::Logout => return Some(Effect::Logout),
             Act::Reboot | Act::PowerOff => self.dialog = Some(Dialog::Confirm(act)),
             Act::Dark => { self.mode = Mode::Dark; return Some(Effect::SaveTheme(Mode::Dark)); }
             Act::Light => { self.mode = Mode::Light; return Some(Effect::SaveTheme(Mode::Light)); }
