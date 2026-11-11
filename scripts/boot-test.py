@@ -389,7 +389,8 @@ def terminal_run(vm, command, expect, timeout=120, label=None):
     while time.time() < end:
         time.sleep(0.7)
         d = app_line(vm, "terminal", 1) or {}
-        if expect in (d.get("l1", "") + d.get("l2", "") + d.get("l3", "")): break
+        shown = d.get("l1", "") + d.get("l2", "") + d.get("l3", "")
+        if (re.search(expect[3:], shown) if expect.startswith("re:") else expect in shown): break
     else:
         step(label or f"terminal: {command[:50]}", False, str(d))
     step(label or f"terminal: {command[:50]}", True)
@@ -537,7 +538,18 @@ def scenario_testing():
         step("software app lists installed programs", int(d.get("installed", "0")) > 5, str(d))
         press(vm, "f4")
         open_app(vm, 1)
-        terminal_run(vm, "exec85 --pkg add openjdk21-jre-headless; echo JPKG=$?", "JPKG=0", 900, "software: Java installed with apk")
+        type_text(vm, "exec85 --pkg add openjdk21-jre-headless; echo JPKG=$?"); vm.monitor("sendkey ret")
+        end = time.time() + 900; d = {}
+        while time.time() < end:
+            time.sleep(1)
+            d = app_line(vm, "terminal", 1) or {}
+            if re.search(r"JPKG=\d", d.get("l1", "") + d.get("l2", "") + d.get("l3", "")): break
+        print("JAVA install ended after", round(time.time() - (end - 900)), "s:", d, flush=True)
+        for cmd, mark in [("df -m / | tail -1; echo DG1", "DG1"), ("free -m | head -2 | tail -1; echo DG2", "DG2"), ("ls /usr/lib/jvm; echo DG3", "DG3"), ("java -version 2>&1 | head -1; echo DG4", "DG4")]:
+            try: terminal_run(vm, cmd, mark, 30, "diagnostic")
+            except AssertionError: pass
+            print("DIAG>", app_line(vm, "terminal", 1), flush=True)
+        step("software: Java installed with apk", re.search(r"JPKG=0", d.get("l1", "") + d.get("l2", "") + d.get("l3", "")) is not None, str(d))
         terminal_run(vm, "java -version 2>&1 | head -1; echo JAVA=$?", "JAVA=0", 120, "software: Java runs")
     finally:
         vm.stop()
