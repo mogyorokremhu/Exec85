@@ -1,19 +1,57 @@
 //! Drawing into an in-memory pixel buffer, plus the colour themes.
 //! Pixels are 0x00RRGGBB.
+use crate::font;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode { Light, Dark }
 
-/// One palette used by every widget, so light/dark applies to the whole UI.
+/// One palette used by every widget, so light/dark applies to the whole interface.
 #[derive(Clone, Copy)]
-pub struct Theme { pub bg: u32, pub bar: u32, pub text: u32 }
+pub struct Theme {
+    pub bg: u32,             // desktop behind everything
+    pub panel: u32,          // window background
+    pub text: u32,
+    pub dim: u32,            // secondary text
+    pub bar: u32,            // menu bar and status bar
+    pub bar_text: u32,
+    pub accent: u32,         // selection / open menu
+    pub accent_text: u32,
+    pub border: u32,
+    pub title_on: u32,       // title bar of the active window
+    pub title_on_text: u32,
+    pub title_off: u32,
+    pub title_off_text: u32,
+}
 
 impl Theme {
     pub fn new(mode: Mode) -> Theme {
         match mode {
-            Mode::Dark => Theme { bg: 0x0B1D2A, bar: 0x1F3B4D, text: 0xE8E1CF },
-            Mode::Light => Theme { bg: 0xF3EBD8, bar: 0xC9BFA3, text: 0x1B1B1B },
+            Mode::Dark => Theme {
+                bg: 0x0B1D2A, panel: 0x102838, text: 0xE8E1CF, dim: 0x8FA3AE,
+                bar: 0x1F3B4D, bar_text: 0xE8E1CF, accent: 0xE0A030, accent_text: 0x0B1D2A,
+                border: 0x3F6178, title_on: 0x2F6D8F, title_on_text: 0xF4EEDD,
+                title_off: 0x1F3B4D, title_off_text: 0xA9B8C0,
+            },
+            Mode::Light => Theme {
+                bg: 0xF3EBD8, panel: 0xFBF7EA, text: 0x1B1B1B, dim: 0x6B6455,
+                bar: 0xC9BFA3, bar_text: 0x1B1B1B, accent: 0x1F5F8B, accent_text: 0xFBF7EA,
+                border: 0x8C8268, title_on: 0x1F5F8B, title_on_text: 0xFBF7EA,
+                title_off: 0xD9CFB4, title_off_text: 0x4A4536,
+            },
         }
+    }
+}
+
+/// Size of one text cell in pixels (6 x 10 font pixels: glyph plus a 1-pixel margin all round, room for tails). The whole UI is laid out in cells, so
+/// windows always line up with the text grid.
+#[derive(Clone, Copy, Debug)]
+pub struct Metrics { pub scale: usize, pub cw: usize, pub ch: usize }
+
+impl Metrics {
+    /// Pick a text size that gives a similar number of rows on any screen height.
+    pub fn for_height(h: usize) -> Metrics {
+        let scale = ((h + 200) / 400).max(2);
+        Metrics { scale, cw: 6 * scale, ch: 10 * scale }
     }
 }
 
@@ -29,29 +67,23 @@ impl Canvas {
         }
     }
 
-    /// Draw text with the tiny built-in 5x7 font, each font pixel `scale` px square.
-    pub fn text(&mut self, x: usize, y: usize, s: &str, scale: usize, c: u32) {
-        let mut cx = x;
-        for ch in s.chars() {
-            if let Some(g) = glyph(ch) {
-                for (ry, bits) in g.iter().enumerate() {
-                    for rx in 0..5 {
-                        if bits & (0x10 >> rx) != 0 {
-                            self.fill_rect(cx + rx * scale, y + ry * scale, scale, scale, c);
-                        }
-                    }
-                }
-            }
-            cx += 6 * scale;
-        }
+    /// Rectangle outline `t` pixels thick, drawn inside the given box.
+    pub fn outline(&mut self, x: usize, y: usize, w: usize, h: usize, t: usize, c: u32) {
+        if w == 0 || h == 0 { return; }
+        let t = t.min(w).min(h);
+        self.fill_rect(x, y, w, t, c);
+        self.fill_rect(x, y + h - t, w, t, c);
+        self.fill_rect(x, y, t, h, c);
+        self.fill_rect(x + w - t, y, t, h, c);
     }
 
-    /// Milestone 1 screen: an empty themed desktop with a title bar. The menu
-    /// bar, drive row and file list arrive in milestone 2.
-    pub fn draw_blank(&mut self, t: &Theme) {
-        self.fill_rect(0, 0, self.w, self.h, t.bg);
-        self.fill_rect(0, 0, self.w, 28, t.bar);
-        self.text(10, 6, "Exec85", 3, t.text);
+    /// Draw one character with its top-left at pixel (x, y).
+    pub fn glyph(&mut self, x: usize, y: usize, ch: char, scale: usize, fg: u32) {
+        for (ry, row) in font::glyph(ch).iter().enumerate() {
+            for (rx, b) in row.bytes().enumerate() {
+                if b == b'#' { self.fill_rect(x + rx * scale, y + ry * scale, scale, scale, fg); }
+            }
+        }
     }
 
     pub fn to_ppm(&self) -> Vec<u8> {
@@ -61,37 +93,25 @@ impl Canvas {
     }
 }
 
-/// 5x7 glyphs; only the characters we need so far.
-fn glyph(c: char) -> Option<[u8; 7]> {
-    Some(match c {
-        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'x' => [0, 0, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001],
-        'e' => [0, 0, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110],
-        'c' => [0, 0, 0b01110, 0b10000, 0b10000, 0b10001, 0b01110],
-        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn blank_screen_uses_theme_colours() {
-        for m in [Mode::Dark, Mode::Light] {
-            let t = Theme::new(m);
-            let mut c = Canvas::new(320, 200);
-            c.draw_blank(&t);
-            assert_eq!(c.px[100 * 320 + 160], t.bg, "centre is background");
-            assert_eq!(c.px[1 * 320 + 300], t.bar, "top strip is the bar");
-            assert!(c.px.iter().any(|&p| p == t.text), "title text drawn");
-        }
-    }
-    #[test]
     fn drawing_outside_the_canvas_is_clipped() {
         let mut c = Canvas::new(10, 10);
         c.fill_rect(5, 5, 100, 100, 1);
-        c.text(8, 8, "Exec85", 3, 2);
+        c.glyph(8, 8, 'W', 3, 2);
+        c.outline(7, 7, 50, 50, 2, 3);
+    }
+    #[test]
+    fn metrics_give_readable_text_on_common_screens() {
+        assert_eq!(Metrics::for_height(768).scale, 2);
+        assert_eq!(Metrics::for_height(1080).scale, 3);
+        assert!(Metrics::for_height(2160).scale >= 5);
+        assert_eq!(Metrics::for_height(100).scale, 2);
+    }
+    #[test]
+    fn themes_differ() {
+        assert_ne!(Theme::new(Mode::Dark).bg, Theme::new(Mode::Light).bg);
     }
 }
