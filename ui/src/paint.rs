@@ -61,6 +61,13 @@ impl Painter<'_> {
         }
     }
 
+    /// A horizontal bar, `w` cells wide, filled to `frac` (0.0 ..= 1.0).
+    pub fn bar(&mut self, col: usize, row: usize, w: usize, frac: f64, fg: u32, bg: u32) {
+        let filled = ((w as f64 * frac.clamp(0.0, 1.0)).round() as usize).min(w);
+        self.cells(col, row, w, 1, bg);
+        self.cells(col, row, filled, 1, fg);
+    }
+
     /// A single-line input box, `w` cells wide, drawn on one row. Passwords show as dots.
     pub fn field(&mut self, col: usize, row: usize, w: usize, text: &str, focused: bool, masked: bool) {
         let t = self.t;

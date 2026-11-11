@@ -8,6 +8,8 @@ use crate::layout::Rect;
 use crate::paint::Painter;
 pub mod calculator;
 pub mod clock;
+pub mod diskusage;
+pub mod monitor;
 pub mod notepad;
 pub mod paint;
 pub mod reversi;
@@ -83,6 +85,8 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Clock => Box::new(clock::Clock::new()),
         Kind::Notepad => Box::new(notepad::Notepad::new(env)),
         Kind::Paint => Box::new(paint::Paint::new(env)),
+        Kind::Monitor => Box::new(monitor::Monitor::new()),
+        Kind::DiskUsage => Box::new(diskusage::DiskUsage::new(env)),
         Kind::Reversi => Box::new(reversi::Reversi::new()),
         Kind::Snake => Box::new(snake::Snake::new(40, 20)),
         other => Box::new(Placeholder(other)),

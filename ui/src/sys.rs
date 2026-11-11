@@ -75,3 +75,9 @@ pub fn local_time(secs: i64) -> Local {
     unsafe { localtime_r(&secs, &mut tm) };
     Local { year: tm.year + 1900, month: (tm.mon + 1) as u32, day: tm.mday as u32, hour: tm.hour as u32, min: tm.min as u32, sec: tm.sec as u32 }
 }
+
+/// Send a signal to a process (15 = ask it to stop, 9 = force it).
+pub fn send_signal(pid: i32, sig: i32) -> std::io::Result<()> {
+    // SAFETY: kill only takes numbers.
+    if unsafe { kill(pid, sig) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
