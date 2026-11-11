@@ -9,6 +9,7 @@ use crate::paint::Painter;
 pub mod calculator;
 pub mod clock;
 pub mod notepad;
+pub mod paint;
 pub mod reversi;
 pub mod snake;
 
@@ -81,6 +82,7 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Calculator => Box::new(calculator::Calculator::new()),
         Kind::Clock => Box::new(clock::Clock::new()),
         Kind::Notepad => Box::new(notepad::Notepad::new(env)),
+        Kind::Paint => Box::new(paint::Paint::new(env)),
         Kind::Reversi => Box::new(reversi::Reversi::new()),
         Kind::Snake => Box::new(snake::Snake::new(40, 20)),
         other => Box::new(Placeholder(other)),
