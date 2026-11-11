@@ -59,3 +59,28 @@ costs about 4.7 MB of RAM. The UI binary is still a single static file with no d
 The boot test now also drives the real ISO with QEMU's virtual keyboard: 37 checks per firmware
 (type-ahead, opening folders, menus, theme switching verified by screenshot pixels, pane focus,
 layout toggles, dialogs). Screenshots from each run are in the `boot-bios` / `boot-uefi` artifacts.
+
+### M3 - installer and login (CI run 20, commit d6ddf9b)
+
+GitHub runner with KVM, QEMU q35, **1 GB RAM**, a virtual 8 GB SATA disk. The install image runs from RAM,
+so the VM was raised from 512 MB (see below). Same scenario on both firmware types: install by keyboard,
+restart from the disk, log in, log out.
+
+| | BIOS | UEFI |
+|---|---|---|
+| **Installed system**, kernel clock at the login screen | 2.42 s | 2.77 s |
+| **Installed system**, QEMU start to login screen | 3.21 s | 4.41 s |
+| **Installed system**, memory used at the login screen (15 s after) | 151,124 kB of 988,804 kB | 153,716 kB of 983,080 kB |
+| Login process RSS | 5,620 kB | 5,924 kB |
+| Live install image, memory used (everything is in RAM) | 299,120 kB | 293,192 kB |
+| Installation itself (confirm to finished) | 1.2 s | 1.4 s |
+
+Reading these honestly:
+- The installed-system row is the one to compare with other distributions; the live-image row is not.
+  Nothing has been measured against Debian yet, so there is still **no "lighter than Debian" claim**.
+- ~150 MB used at the login screen is more than I want. The likely culprits are the full set of kernel modules
+  being loaded for the VM's devices and the kernel's own memory; trimming them is a known next step.
+- The 1.2 s install is on a host-cached virtual disk. A real disk will be much slower.
+- **The live install image needs more than 512 MB of RAM**: the boot image is now 154 MB compressed and 180 MB
+  unpacked, and a 512 MB machine panics with "Unable to mount root fs". A 1 GB VM is fine. Making the installer
+  image smaller (load the system from the disc instead of unpacking it all into RAM) is planned.

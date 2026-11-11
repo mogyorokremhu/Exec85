@@ -2,7 +2,7 @@
 
 A lightweight, keyboard-driven, Linux-based server OS with a 1985-style tiled interface.
 
-> **Status:** early development. The image boots and the keyboard-driven shell (menu bar, drive row, file browser, light/dark theme) works. There is no installer yet, so it cannot be installed on a disk.
+> **Status:** early alpha. You can install Exec85 onto a disk (BIOS or UEFI), log in, and use the keyboard-driven file-browser shell with light/dark themes. Tested in virtual machines only; the installer erases the disk you choose, so do not use it on a real computer yet. Apps, services and software installation are still to come.
 
 ## What it is
 

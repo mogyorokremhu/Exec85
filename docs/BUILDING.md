@@ -64,3 +64,28 @@ Click into the QEMU window so it receives your keyboard (press `Ctrl+Alt+G` to g
 | File > Shut down / Restart | asks for confirmation first (Y / N) |
 
 You start in `/`, the live system's own files (it runs from RAM; nothing on your PC is touched).
+
+## Trying the installer (milestone 3)
+
+> **The installer erases the whole disk you choose.** Use a virtual machine. It has not been tested on real
+> hardware yet.
+
+You need a virtual disk and at least 1 GB of RAM for the installer (it runs from memory). On Windows:
+
+```powershell
+& "C:\Program Files\qemu\qemu-img.exe" create -f qcow2 exec85-disk.qcow2 16G
+& "C:\Program Files\qemu\qemu-system-x86_64.exe" -m 1024 -smp 2 -cdrom exec85.iso -boot d -drive file=exec85-disk.qcow2,if=ide -vga std -accel tcg
+```
+
+Choose **Install Exec85** and follow the steps (everything works from the keyboard; type to search the
+keyboard-layout and time-zone lists). When it says the installation is complete, press Enter to restart, close
+the window, and start it again **without the CD** to boot from the disk:
+
+```powershell
+& "C:\Program Files\qemu\qemu-system-x86_64.exe" -m 1024 -smp 2 -drive file=exec85-disk.qcow2,if=ide -vga std -accel tcg
+```
+
+You get the login screen. Log in with the name and password you chose. File > Log out returns to the login screen.
+Delete `exec85-disk.qcow2` to start over. To try the system without installing, pick **Try Exec85 without installing**.
+
+For UEFI, add `-drive if=pflash,format=raw,readonly=on,file="C:\Program Files\qemu\share\edk2-x86_64-code.fd"`.
