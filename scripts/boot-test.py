@@ -19,7 +19,7 @@ cmd = ["qemu-system-x86_64", "-machine", "q35", "-accel", accel, "-m", "512", "-
        "-cdrom", iso, "-boot", "d", "-vga", "std", "-display", "none", "-no-reboot",
        "-serial", f"file:{serial_log}", "-monitor", f"unix:{mon_path},server,nowait"]
 if firmware == "uefi":
-    code = next(iter(glob.glob("/usr/share/OVMF/OVMF_CODE_4M.fd") + glob.glob("/usr/share/OVMF/OVMF_CODE.fd") + glob.glob("/usr/share/ovmf/OVMF.fd")), None)
+    code = next(iter(glob.glob("/usr/share/OVMF/OVMF_CODE_4M.fd") + glob.glob("/usr/share/OVMF/OVMF_CODE.fd") + glob.glob("/usr/share/ovmf/OVMF.fd") + glob.glob("/usr/share/qemu/edk2-x86_64-code.fd")), None)
     if not code: sys.exit("OVMF firmware not found (apt install ovmf)")
     cmd += ["-drive", f"if=pflash,format=raw,readonly=on,file={code}"]
 
