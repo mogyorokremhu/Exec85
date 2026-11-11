@@ -23,4 +23,12 @@ modprobe -a sd_mod sr_mod ahci ata_piix ata_generic nvme virtio_blk virtio_scsi 
 mdev -s
 # Installed systems: mount /boot (and anything else) from /etc/fstab. The live disc has no fstab.
 grep -qw exec85.live /proc/cmdline || mount -a 2>/dev/null
+# Network: bring up every wired interface and ask the router for an address (in the background, so boot is not delayed).
+modprobe -a e1000 e1000e r8169 virtio_net igb 2>/dev/null
+for n in /sys/class/net/*; do
+  i=${n##*/}
+  case "$i" in lo|wl*) continue ;; esac
+  ip link set "$i" up 2>/dev/null
+  udhcpc -b -q -S -i "$i" -p "/run/udhcpc.$i.pid" >/dev/null 2>&1 &
+done
 exit 0

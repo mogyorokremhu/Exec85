@@ -10,6 +10,7 @@ pub mod calculator;
 pub mod clock;
 pub mod diskusage;
 pub mod monitor;
+pub mod network;
 pub mod notepad;
 pub mod paint;
 pub mod reversi;
@@ -87,6 +88,7 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Notepad => Box::new(notepad::Notepad::new(env)),
         Kind::Paint => Box::new(paint::Paint::new(env)),
         Kind::Monitor => Box::new(monitor::Monitor::new()),
+        Kind::Network => Box::new(network::Network::new()),
         Kind::Terminal => Box::new(terminal::Terminal::open(env)),
         Kind::DiskUsage => Box::new(diskusage::DiskUsage::new(env)),
         Kind::Reversi => Box::new(reversi::Reversi::new()),
