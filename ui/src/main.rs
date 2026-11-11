@@ -6,9 +6,11 @@
 //!   --ppm FILE   draw the shell into an image file (testing)
 mod account;
 mod app;
+mod apps;
 mod crypt;
 mod disks;
 mod display;
+mod fileops;
 mod font;
 mod fs;
 mod gfx;
@@ -19,6 +21,7 @@ mod keys;
 mod layout;
 mod login;
 mod paint;
+mod shell;
 mod supervisor;
 mod sys;
 mod ui;
@@ -209,30 +212,45 @@ fn stage_shell() -> ! {
     let mut s = Screen::open();
     let (cols, rows) = s.cells();
     let start = std::env::var("EXEC85_START").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"));
+    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| start.clone());
     let user = std::env::var("USER").unwrap_or_else(|_| "?".into());
-    let (uid, host) = (sys::uid(), hostname());
-    let mut app = App::new(cols, rows, read_mode(), start);
-    let rx = input::spawn();
-    let state = |app: &App| format!("{} user={user} uid={uid} host={host}", app.state_line());
+    let extra = format!(" user={user} uid={} host={}", sys::uid(), hostname());
 
-    ui::draw(&app, &mut s.canvas, &s.m);
+    // One channel carries key presses and "something changed" wake-ups from app threads (e.g. terminal output).
+    let (tx, rx) = channel::<Event>();
+    let key_tx = tx.clone();
+    input::spawn_with(Arc::new(move |k| key_tx.send(Event::Key(k)).is_ok()));
+    let wake_tx = tx.clone();
+    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || { let _ = wake_tx.send(Event::Wake); });
+    let mut shell = shell::Shell::new(cols, rows, read_mode(), start, home, wake);
+
+    ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m);
     s.show();
     announce("shell", &s);
-    log(&state(&app));
+    for l in shell.state_lines(&extra) { log(&l); }
     loop {
-        let first = match rx.recv_timeout(Duration::from_secs(3600)) { Ok(k) => k, Err(RecvTimeoutError::Timeout) => continue, Err(RecvTimeoutError::Disconnected) => loop { thread::sleep(Duration::from_secs(3600)); } };
+        // Sleep until a key arrives or an app needs its next timer tick; with no timers this sleeps for good.
+        let timeout = shell.next_deadline().unwrap_or(Duration::from_secs(3600));
         let mut effects = Vec::new();
-        effects.extend(app.handle(first));
-        while let Ok(k) = rx.try_recv() { effects.extend(app.handle(k)); }
-        ui::draw(&app, &mut s.canvas, &s.m);
+        let mut from_key = false;
+        match rx.recv_timeout(timeout) {
+            Ok(Event::Key(k)) => { effects.extend(shell.handle(k)); from_key = true; }
+            Ok(Event::Wake) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => loop { thread::sleep(Duration::from_secs(3600)); },
+        }
+        while let Ok(e) = rx.try_recv() { if let Event::Key(k) = e { effects.extend(shell.handle(k)); from_key = true; } }
+        shell.tick();
+        ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m);
         s.show();
-        log(&state(&app));
+        let lines = if from_key { shell.state_lines(&extra) } else { shell.changed_state_lines(&extra) };
+        for l in lines { log(&l); }
         for e in effects {
             match e {
                 Effect::SaveTheme(m) => save_theme(m),
                 Effect::Logout => std::process::exit(supervisor::EXIT_LOGOUT),
                 Effect::PowerOff => std::process::exit(supervisor::EXIT_POWEROFF),
                 Effect::Reboot => std::process::exit(supervisor::EXIT_REBOOT),
+                _ => {}
             }
         }
     }
@@ -284,7 +302,7 @@ fn render_to_file(args: &[String]) {
         _ => {
             let mut app = App::new(cols, rows, mode, dir);
             for k in parsed { app.handle(k); }
-            ui::draw(&app, &mut c, &m);
+            ui::draw(&app, &[], &mut c, &m);
         }
     }
     stdfs::write(&out, c.to_ppm()).expect("write image");

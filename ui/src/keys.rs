@@ -18,7 +18,11 @@ pub mod code {
     pub const ENTER: u16 = 28;
     pub const SPACE: u16 = 57;
     pub const F1: u16 = 59;
+    pub const F2: u16 = 60;
+    pub const F4: u16 = 62;
     pub const F5: u16 = 63;
+    pub const F6: u16 = 64;
+    pub const F7: u16 = 65;
     pub const F10: u16 = 68;
     pub const HOME: u16 = 102;
     pub const UP: u16 = 103;

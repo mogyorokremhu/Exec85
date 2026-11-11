@@ -1,11 +1,12 @@
 //! Drawing the shell: menu bar, drive row, tiled windows, status bar, menus, dialogs.
-use crate::app::{self, Act, App, Dialog, Focus, DRIVE_H, DRIVE_Y, MENUS};
+use crate::app::{self, Act, App, Dialog, Focus, PromptKind, DRIVE_H, DRIVE_Y, MENUS};
+use crate::shell::AppWindow;
 use crate::fs::{fmt_size, fmt_time, mode_string};
 use crate::gfx::{Canvas, Metrics, Theme};
 use crate::paint::{tail, Painter};
 use crate::layout::{Rect, Win};
 
-pub fn draw(app: &App, c: &mut Canvas, m: &Metrics) {
+pub fn draw(app: &App, apps: &[AppWindow], c: &mut Canvas, m: &Metrics) {
     let t = Theme::new(app.mode);
     c.fill_rect(0, 0, c.w, c.h, t.bg);
     let mut p = Painter { c, m: *m, t };
@@ -15,11 +16,16 @@ pub fn draw(app: &App, c: &mut Canvas, m: &Metrics) {
         match win {
             Win::Files => files(&mut p, app, r),
             Win::Details => details(&mut p, app, r),
+            Win::App(i) => if let Some(w) = apps.get(i) {
+                let focused = app.focus == Focus::App(i);
+                let inner = p.window(r, &w.app.title(), focused);
+                w.app.draw(&mut p, inner, focused);
+            },
         }
     }
-    status_bar(&mut p, app);
+    status_bar(&mut p, app, apps);
     if let Some(ms) = app.menu { dropdown(&mut p, app, ms); }
-    if let Some(d) = app.dialog { dialog(&mut p, app, d); }
+    if let Some(d) = app.dialog.clone() { dialog(&mut p, app, d); }
 }
 
 fn menu_bar(p: &mut Painter, app: &App) {
@@ -128,7 +134,7 @@ fn details(p: &mut Painter, app: &App, r: Rect) {
     }
 }
 
-fn status_bar(p: &mut Painter, app: &App) {
+fn status_bar(p: &mut Painter, app: &App, apps: &[AppWindow]) {
     let t = p.t;
     let y = app.rows - 1;
     p.cells(0, y, app.cols, 1, t.bar);
@@ -136,6 +142,7 @@ fn status_bar(p: &mut Painter, app: &App) {
         Focus::Files => "F10 Menu   Tab Next pane   Enter Open   Backspace Up   F1 Keys".to_string(),
         Focus::Drives => "Left/Right Choose drive   Enter Go   Tab Next pane   F1 Keys".to_string(),
         Focus::Details => "Tab Next pane   Ctrl+D Hide details   F1 Keys".to_string(),
+        Focus::App(i) => apps.get(i).map_or(String::new(), |w| w.app.hint().to_string()),
     });
     let pos = format!("{}/{}", app.sel + 1, app.entries.len());
     let room = app.cols.saturating_sub(pos.len() + 3);
@@ -186,10 +193,16 @@ const KEYS_HELP: [&str; 13] = [
 
 fn dialog(p: &mut Painter, app: &App, d: Dialog) {
     let t = p.t;
-    let (title, lines): (&str, Vec<String>) = match d {
+    let name = app.selected().map_or(String::new(), |e| e.name.clone());
+    let (title, lines): (&str, Vec<String>) = match &d {
+        Dialog::Confirm(Act::Delete) => ("Delete", vec![format!("Delete \"{name}\"?"), "A folder is deleted with everything inside it.".to_string(), String::new(), "[Y] Yes     [N] No".to_string()]),
         Dialog::Confirm(a) => (
-            if a == Act::Reboot { "Restart" } else { "Shut down" },
-            vec![if a == Act::Reboot { "Restart this computer now?" } else { "Shut down this computer now?" }.to_string(), String::new(), "[Y] Yes     [N] No".to_string()],
+            if *a == Act::Reboot { "Restart" } else { "Shut down" },
+            vec![if *a == Act::Reboot { "Restart this computer now?" } else { "Shut down this computer now?" }.to_string(), String::new(), "[Y] Yes     [N] No".to_string()],
+        ),
+        Dialog::Prompt(kind, _) => (
+            match kind { PromptKind::NewFile => "New file", PromptKind::NewFolder => "New folder", PromptKind::Rename(_) => "Rename" },
+            vec![match kind { PromptKind::NewFile => "Name of the new file:", PromptKind::NewFolder => "Name of the new folder:", PromptKind::Rename(_) => "New name:" }.to_string(), String::new(), String::new(), "Enter OK     Esc Cancel".to_string(), "                                          ".to_string()],
         ),
         Dialog::Keys => ("Keyboard shortcuts", KEYS_HELP.iter().map(|s| s.to_string()).collect()),
         Dialog::About => ("About Exec85", vec![
@@ -206,6 +219,7 @@ fn dialog(p: &mut Painter, app: &App, d: Dialog) {
     p.clip(r.x, r.y, r.w, &format!(" {title}"), t.title_on_text, t.title_on);
     p.outline(r, t.title_on);
     for (i, l) in lines.iter().enumerate() { p.clip(r.x + 2, r.y + 2 + i, r.w.saturating_sub(4), l, t.text, t.panel); }
+    if let Dialog::Prompt(_, text) = &d { p.field(r.x + 2, r.y + 3, r.w.saturating_sub(4), text, true, false); }
 }
 
 #[cfg(test)]
@@ -221,7 +235,7 @@ mod tests {
         let mut app = App::new(w / m.cw, h / m.ch, mode, PathBuf::from("/"));
         for k in keys.split(',').filter(|s| !s.is_empty()) { app.handle(parse_key(k).unwrap()); }
         let mut c = Canvas::new(w, h);
-        draw(&app, &mut c, &m);
+        draw(&app, &[], &mut c, &m);
         (c, m, app)
     }
 
@@ -246,7 +260,7 @@ mod tests {
             for keys in ["", "f10", "alt-v,down", "f1", "ctrl-l", "tab,tab"] {
                 for k in keys.split(',').filter(|s| !s.is_empty()) { app.handle(parse_key(k).unwrap()); }
                 let mut c = Canvas::new(w, h);
-                draw(&app, &mut c, &m);
+                draw(&app, &[], &mut c, &m);
             }
         }
     }
