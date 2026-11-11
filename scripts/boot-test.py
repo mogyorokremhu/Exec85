@@ -17,6 +17,7 @@ iso, firmware, outdir = sys.argv[1:4]
 accel = sys.argv[sys.argv.index("--accel") + 1] if "--accel" in sys.argv else ("kvm" if os.access("/dev/kvm", os.W_OK) else "tcg")
 os.makedirs(outdir, exist_ok=True)
 SLOW = accel == "tcg"
+MEM_MB = int(os.environ.get("BOOT_TEST_MEM", "1024"))   # the install image runs from RAM: it needs more than a 512 MB machine
 STEP_TIMEOUT = 60 if SLOW else 20
 
 STATE_KEYS = ("dir", "index", "name", "count", "drive", "focus", "menu", "item", "dialog", "theme", "sort", "hidden", "layout", "details", "user", "uid", "host")
@@ -28,7 +29,7 @@ KEYSETS = {"EXEC85_STATE": STATE_KEYS, "EXEC85_INSTALLER": INSTALLER_KEYS, "EXEC
 DARK = {"bar": (0x1F, 0x3B, 0x4D), "panel": (0x10, 0x28, 0x38), "bg": (0x0B, 0x1D, 0x2A)}
 LIGHT = {"bar": (0xC9, 0xBF, 0xA3), "panel": (0xFB, 0xF7, 0xEA), "bg": (0xF3, 0xEB, 0xD8)}
 
-result = {"firmware": firmware, "accel": accel, "steps": [], "passed": False}
+result = {"firmware": firmware, "accel": accel, "vm_mem_mb": MEM_MB, "steps": [], "passed": False}
 
 
 def step(name, ok, detail=""):
@@ -71,7 +72,7 @@ class VM:
         self.sock = os.path.join(outdir, f"mon-{firmware}-{tag}.sock")
         for p in (self.log, self.sock):
             if os.path.exists(p): os.remove(p)
-        cmd = ["qemu-system-x86_64", "-machine", "q35", "-accel", accel, "-m", "512", "-smp", "2", "-vga", "std", "-display", "none",
+        cmd = ["qemu-system-x86_64", "-machine", "q35", "-accel", accel, "-m", str(MEM_MB), "-smp", "2", "-vga", "std", "-display", "none",
                "-no-reboot", "-serial", f"file:{self.log}", "-monitor", f"unix:{self.sock},server,nowait"]
         if cdrom: cmd += ["-cdrom", cdrom, "-boot", "d"]
         else: cmd += ["-boot", "c"]
@@ -334,6 +335,9 @@ json.dump(result, open(os.path.join(outdir, f"result-{firmware}.json"), "w"), in
 print(json.dumps({k: v for k, v in result.items() if k != "steps"}, indent=1))
 if failure:
     for name in sorted(glob.glob(os.path.join(outdir, f"serial-{firmware}-*.log"))):
-        print(f"---- {os.path.basename(name)} (last 70 lines) ----")
-        print("\n".join(open(name, errors="replace").read().splitlines()[-70:]))
+        lines = open(name, errors="replace").read().splitlines()
+        print(f"---- {os.path.basename(name)}: first 25 lines ----"); print("\n".join(lines[:25]))
+        key = re.compile(r"initramfs|initrd|Unpacking|Memory:|Run /|command line|EXEC85|Kernel panic|No space|out of memory|Out of memory|error|failed", re.I)
+        print(f"---- {os.path.basename(name)}: interesting lines ----"); print("\n".join(l for l in lines if key.search(l))[:6000])
+        print(f"---- {os.path.basename(name)}: last 40 lines ----"); print("\n".join(lines[-40:]))
     sys.exit(1)
