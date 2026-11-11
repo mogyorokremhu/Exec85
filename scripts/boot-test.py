@@ -244,6 +244,7 @@ def scenario_install():
     with open(disk, "wb") as f: f.truncate(8 << 30)
     I = "EXEC85_INSTALLER"
     vm = VM("install", cdrom=iso, disk=disk)
+    KEYBOARD["layout"] = "uk"   # this scenario installs with the UK keyboard
     t_install = None
     try:
         step("install: installer is up", vm.wait_for(r"EXEC85_SCREEN installer", 600 if SLOW else 120) is not None)
@@ -365,10 +366,14 @@ APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "cloc
 SHIFTED = {"_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {" ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}
 
+KEYBOARD = {"layout": "us"}   # the layout the system under test is using
+UK_SHIFTED = {"|": "shift-less", '"': "shift-2"}   # the UK keyboard puts these elsewhere than the US one
+
 def type_text(vm, text):
     """Type text into the focused window with real key presses."""
     for ch in text:
-        if ch in PLAIN: k = PLAIN[ch]
+        if KEYBOARD["layout"] == "uk" and ch in UK_SHIFTED: k = UK_SHIFTED[ch]
+        elif ch in PLAIN: k = PLAIN[ch]
         elif ch in SHIFTED: k = SHIFTED[ch]
         elif ch.isupper(): k = "shift-" + ch.lower()
         else: k = ch
