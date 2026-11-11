@@ -6,7 +6,8 @@ set -eu
 SRC=${SRC:-/src}
 OUT=${OUT:-/out}
 W=/work
-CMDLINE=${KERNEL_CMDLINE:-"console=tty0 console=ttyS0,115200 rdinit=/sbin/init"}
+# "exec85.live" tells Exec85 it is running from the install image (so: show the installer).
+CMDLINE=${KERNEL_CMDLINE:-"console=tty0 console=ttyS0,115200 rdinit=/sbin/init exec85.live"}
 
 echo "==> installing build tools"
 apk add --no-cache rust cargo build-base xorriso kmod cpio gzip >/dev/null
@@ -14,6 +15,7 @@ apk add --no-cache rust cargo build-base xorriso kmod cpio gzip >/dev/null
 apk add --no-cache limine limine-x86_64 limine-cd limine-sys >/dev/null
 for p in $(apk info | grep -i limine); do echo "--- files of $p"; apk info -L "$p" | grep -v -e doc -e man; done
 command -v limine >/dev/null || { echo "ERROR: limine not installed"; exit 1; }
+findone() { find /usr -name "$1" 2>/dev/null | head -n1; }
 
 echo "==> building the Exec85 program (static)"
 cd "$SRC/ui"
@@ -26,13 +28,36 @@ R=$W/rootfs
 rm -rf "${R:?}"; mkdir -p "$R/etc/apk" "$R/var/cache/apk"
 cp /etc/apk/repositories "$R/etc/apk/"
 apk add --root "$R" --initdb --no-cache --keys-dir /etc/apk/keys \
-    alpine-baselayout alpine-release busybox busybox-openrc openrc mdev-conf kmod >/dev/null
+    alpine-baselayout alpine-release busybox busybox-openrc openrc mdev-conf kmod \
+    sfdisk e2fsprogs dosfstools tzdata doas mkinitfs >/dev/null
+# Make sure the groups the installer puts the first user into exist (with a free group id).
+for want in wheel:10 audio:18 video:27 input:105 users:100; do
+    name=${want%%:*}; gid=${want##*:}
+    grep -q "^$name:" "$R/etc/group" && continue
+    while grep -q "^[^:]*:[^:]*:$gid:" "$R/etc/group"; do gid=$((gid + 100)); done
+    echo "$name:x:$gid:" >> "$R/etc/group"
+done
 # The kernel package would try to build its own initramfs; we don't want that, so skip its scripts.
 apk add --root "$R" --no-cache --no-scripts --keys-dir /etc/apk/keys linux-lts >/dev/null
 KVER=$(ls "$R/lib/modules" | head -n1)
 echo "kernel: $KVER"
 depmod -b "$R" "$KVER"
 cp "$R/boot/vmlinuz-lts" "$W/vmlinuz"
+
+echo "==> building the boot image used by INSTALLED systems (mkinitfs)"
+mkdir -p "$R/etc/mkinitfs"
+echo 'features="base ata scsi usb virtio nvme ext4"' > "$R/etc/mkinitfs/mkinitfs.conf"
+[ -e "$R/dev/null" ] || mknod -m 666 "$R/dev/null" c 1 3
+chroot "$R" /sbin/mkinitfs -o /tmp/initramfs-install "$KVER"
+mkdir -p "$R/usr/share/exec85/install"
+mv "$R/tmp/initramfs-install" "$R/usr/share/exec85/install/initramfs"
+cp "$W/vmlinuz" "$R/usr/share/exec85/install/vmlinuz"
+cp "$(findone limine-bios.sys)" "$(findone BOOTX64.EFI)" "$R/usr/share/exec85/install/"
+cp "$(command -v limine)" "$R/usr/bin/limine"
+rm -f "$R/dev/null"
+apk del --root "$R" mkinitfs >/dev/null 2>&1 || true
+ls -l "$R/usr/share/exec85/install/"
+
 # Firmware blobs are huge (hundreds of MB); they become an optional package set later.
 rm -rf "${R:?}/lib/firmware"
 echo "--- biggest directories in the rootfs (KB) ---"
@@ -58,7 +83,6 @@ rm -rf "${ISO:?}"; mkdir -p "$ISO/boot/limine" "$ISO/EFI/BOOT"
 cp "$W/vmlinuz" "$ISO/boot/vmlinuz"
 cp "$W/initramfs" "$ISO/boot/initramfs"
 sed "s|@CMDLINE@|$CMDLINE|" "$SRC/image/boot/limine.conf" > "$ISO/boot/limine/limine.conf"
-findone() { find /usr -name "$1" 2>/dev/null | head -n1; }
 for f in limine-bios.sys limine-bios-cd.bin limine-uefi-cd.bin BOOTX64.EFI; do [ -n "$(findone $f)" ] || { echo "ERROR: $f not found"; exit 1; }; done
 cp "$(findone limine-bios.sys)" "$(findone limine-bios-cd.bin)" "$(findone limine-uefi-cd.bin)" "$ISO/boot/limine/"
 cp "$(findone BOOTX64.EFI)" "$ISO/EFI/BOOT/"

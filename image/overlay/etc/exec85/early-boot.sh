@@ -18,4 +18,6 @@ find /sys -name modalias -type f -print0 2>/dev/null | xargs -0 cat 2>/dev/null 
 # Input drivers explicitly too (harmless if built in or already loaded).
 modprobe -a evdev i8042 atkbd hid_generic usbhid 2>/dev/null
 mdev -s
+# Installed systems: mount /boot (and anything else) from /etc/fstab. The live disc has no fstab.
+grep -qw exec85.live /proc/cmdline || mount -a 2>/dev/null
 exit 0
