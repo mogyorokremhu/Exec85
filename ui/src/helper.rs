@@ -271,7 +271,7 @@ pub fn cli(args: &[String]) -> i32 {
                     "--user" if i + 1 < rest.len() => { d.user = rest[i + 1].into(); i += 2; }
                     "--env" if i + 1 < rest.len() => { if let Some((k, v)) = rest[i + 1].split_once('=') { d.env.push((k.into(), v.into())); } i += 2; }
                     "--no-autostart" => { d.autostart = false; i += 1; }
-                    "--" => { d.command = rest[i + 1..].join(" "); break; }
+                    "--" => { d.command = rest[i + 1..].iter().map(|w| if w.is_empty() || w.contains(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == '\\') { services::sh_quote(w) } else { w.to_string() }).collect::<Vec<_>>().join(" "); break; }
                     other => { eprintln!("error: unexpected {other}; put the command after --"); return 2; }
                 }
             }

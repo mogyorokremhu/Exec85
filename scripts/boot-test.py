@@ -322,11 +322,79 @@ def scenario_install():
         vm.monitor("sendkey ret")
         d = vm.wait_line(L, lambda d: True, STEP_TIMEOUT, after=n)
         step("installed: Log out returns to the login screen", d is not None and d["failures"] == "0" and d["pw_len"] == "0", str(d))
+        # Log in again, define a service, then restart the computer
+        typed(vm, PW_KEYS, L, pw_len="8")
+        vm.monitor("sendkey ret")
+        vm.wait_line("EXEC85_STATE", lambda d: d.get("user") == "tester", STEP_TIMEOUT, after=len(vm.lines("EXEC85_STATE")))
+        time.sleep(1)
+        open_app(vm, 1)
+        terminal_run(vm, "exec85 --svc add ticker -- sleep 100000; exec85 --svc start ticker; echo TK=$?", "TK=0", 90, "installed: a service is defined and started")
+        step("installed: the service is running", svc_line(vm, "ticker", lambda d: d["status"] == "running" and d["pid"] != "-", 60) is not None)
+        press(vm, "f4")
+        press(vm, "f10", menu="file")
+        press(vm, "up"); press(vm, "up", item="14")
+        press(vm, "ret")
+        vm.monitor("sendkey y")
+        for _ in range(300):
+            if vm.p.poll() is not None: break
+            time.sleep(0.2)
+        step("installed: the computer restarts from the Restart menu item", vm.p.poll() is not None)
+    finally:
+        vm.stop()
+
+    # ---- third boot: nobody logs in, the service must be up anyway ----
+    vm = VM("rebooted", disk=disk)
+    try:
+        step("rebooted: login screen is shown", vm.wait_for(r"EXEC85_SCREEN login", 600 if SLOW else 120) is not None)
+        d = svc_line(vm, "ticker", lambda d: d["status"] == "running" and d["pid"] != "-", 90)
+        step("rebooted: the service is running with nobody logged in", d is not None, "\n".join(l for l in vm.text().splitlines() if "EXEC85_SVC" in l or "EXEC85_HELPER" in l))
+        step("rebooted: still at the login screen", vm.lines("EXEC85_STATE") == [])
     finally:
         vm.stop()
 
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake"]
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software"]
+
+SHIFTED = {"_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
+PLAIN = {" ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}
+
+def type_text(vm, text):
+    """Type text into the focused window with real key presses."""
+    for ch in text:
+        if ch in PLAIN: k = PLAIN[ch]
+        elif ch in SHIFTED: k = SHIFTED[ch]
+        elif ch.isupper(): k = "shift-" + ch.lower()
+        else: k = ch
+        vm.monitor(f"sendkey {k}")
+
+def terminal_run(vm, command, expect, timeout=120, label=None):
+    """Type a command into the Terminal app, press Enter, and wait until the screen's last lines contain `expect`."""
+    type_text(vm, command)
+    vm.monitor("sendkey ret")
+    end = time.time() + timeout
+    d = {}
+    while time.time() < end:
+        time.sleep(0.7)
+        d = app_line(vm, "terminal", 1) or {}
+        if expect in (d.get("l1", "") + d.get("l2", "") + d.get("l3", "")): break
+    else:
+        step(label or f"terminal: {command[:50]}", False, str(d))
+    step(label or f"terminal: {command[:50]}", True)
+
+def svc_line(vm, name, pred, timeout=60, after=0):
+    """Wait for a service status line printed by the system helper on the console."""
+    end = time.time() + timeout
+    while time.time() < end:
+        found = []
+        for line in vm.text().splitlines():
+            if f"EXEC85_SVC name={name} " in line:
+                found.append(dict(kv.split("=", 1) for kv in line.split("EXEC85_SVC ", 1)[1].split() if "=" in kv))
+        for d in found[after:]:
+            if pred(d): return d
+        time.sleep(0.5)
+    return None
+
+def svc_count(vm, name): return sum(1 for l in vm.text().splitlines() if f"EXEC85_SVC name={name} " in l)
 
 def app_line(vm, name, timeout=STEP_TIMEOUT):
     """Wait until the newest EXEC85_APP line is for `name`; return its fields."""
@@ -414,6 +482,50 @@ def scenario_testing():
             open_app(vm, i)
             press(vm, "f4")
         vm.screenshot("t1-shell")
+
+        # ---- services and software, with nothing specific built in ----
+        open_app(vm, 1)    # terminal
+        step("services: the helper is running", vm.wait_for(r"EXEC85_HELPER ready", 30) is not None)
+        terminal_run(vm, "exec85 --pkg update; echo UPD=$?", "UPD=0", 180, "software: package list refreshed over the network")
+        terminal_run(vm, "exec85 --pkg add python3 nginx; echo PKG=$?", "PKG=0", 600, "software: python3 and nginx installed with apk")
+        terminal_run(vm, "exec85 --svc add web --dir /tmp -- python3 -m http.server 8080; echo ADD=$?", "ADD=0", 60, "services: a web service is defined")
+        terminal_run(vm, "exec85 --svc start web; echo START=$?", "START=0", 60, "services: it starts")
+        d = svc_line(vm, "web", lambda d: d["status"] == "running" and d["pid"] != "-", 60)
+        step("services: the web service is running", d is not None)
+        pid1 = d["pid"]
+        terminal_run(vm, "wget -q -O /dev/null http://127.0.0.1:8080/; echo HTTP=$?", "HTTP=0", 60, "services: the website answers")
+        n = svc_count(vm, "web")
+        terminal_run(vm, "pkill -f 8080; echo KIL$((1+1))", "KIL2", 30, "services: kill the process")
+        d = svc_line(vm, "web", lambda d: d["status"] == "running" and d["pid"] not in ("-", pid1), 60, after=n)
+        step("services: it comes back by itself with a new process", d is not None, f"old pid {pid1}")
+        terminal_run(vm, "wget -q -O /dev/null http://127.0.0.1:8080/; echo HTTP2=$?", "HTTP2=0", 60, "services: the website answers again")
+        terminal_run(vm, "exec85 --svc add nginx --user root -- nginx -g 'daemon off;'; exec85 --svc start nginx; echo NG=$?", "NG=0", 60, "services: nginx defined and started")
+        d = svc_line(vm, "nginx", lambda d: d["status"] == "running", 60)
+        step("services: nginx is running", d is not None)
+        terminal_run(vm, "wget -S -O /dev/null http://127.0.0.1/ 2>&1 | head -1", "HTTP/1.1", 60, "services: nginx answers")
+        terminal_run(vm, "exec85 --svc stop web; exec85 --svc remove web; echo GONE=$?", "GONE=0", 60, "services: a service is stopped and removed")
+        d = svc_line(vm, "web", lambda d: d["status"] != "running", 30, after=0)
+        press(vm, "f4")
+        # the Services and Software apps can be opened and show the helper's data
+        open_app(vm, 10)
+        end = time.time() + 30; d = {}
+        while time.time() < end:
+            d = app_line(vm, "services", 1) or {}
+            if d.get("count") == "1": break
+            time.sleep(0.5)
+        step("services app lists the service", d.get("count") == "1", str(d))
+        press(vm, "f4")
+        open_app(vm, 11)
+        end = time.time() + 60; d = {}
+        while time.time() < end:
+            d = app_line(vm, "software", 1) or {}
+            if d.get("view") == "installed" and int(d.get("installed", "0")) > 5: break
+            time.sleep(0.5)
+        step("software app lists installed programs", int(d.get("installed", "0")) > 5, str(d))
+        press(vm, "f4")
+        open_app(vm, 1)
+        terminal_run(vm, "exec85 --pkg add openjdk21-jre-headless; echo JPKG=$?", "JPKG=0", 900, "software: Java installed with apk")
+        terminal_run(vm, "java -version 2>&1 | head -1; echo JAVA=$?", "JAVA=0", 120, "software: Java runs")
     finally:
         vm.stop()
 

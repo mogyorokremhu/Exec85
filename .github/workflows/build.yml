@@ -32,7 +32,7 @@ jobs:
   boot-test:
     needs: build-iso
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
