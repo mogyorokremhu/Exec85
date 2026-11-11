@@ -10,15 +10,8 @@ CMDLINE=${KERNEL_CMDLINE:-"console=tty0 console=ttyS0,115200 rdinit=/sbin/init"}
 
 echo "==> installing build tools"
 apk add --no-cache rust cargo build-base xorriso kmod cpio gzip >/dev/null
-# Limine bootloader: try the stable repos first, then Alpine's edge repos.
-apk update >/dev/null
-echo "limine in stable repos: $(apk search -q 'limine*' | tr '\n' ' ')"
-if ! apk search -q limine | grep -qx limine; then
-    EDGE=https://dl-cdn.alpinelinux.org/alpine/edge
-    apk add --no-cache -X $EDGE/community -X $EDGE/testing --allow-untrusted limine >/dev/null || true
-else
-    apk add --no-cache limine >/dev/null
-fi
+# Limine bootloader. Alpine splits it: the tool, the x86_64 EFI file, the BIOS file, and the CD images.
+apk add --no-cache limine limine-x86_64 limine-cd limine-sys >/dev/null
 for p in $(apk info | grep -i limine); do echo "--- files of $p"; apk info -L "$p" | grep -v -e doc -e man; done
 command -v limine >/dev/null || { echo "ERROR: limine not installed"; exit 1; }
 
