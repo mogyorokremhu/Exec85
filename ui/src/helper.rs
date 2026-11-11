@@ -212,6 +212,22 @@ fn serve_one(mut s: UnixStream) {
     let _ = s.write_all(reply.as_bytes());
 }
 
+fn read_cmdline(dir: &Path) -> Vec<String> {
+    std::fs::read(dir.join("cmdline")).map(|raw| raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect()).unwrap_or_default()
+}
+
+fn read_ppid(dir: &Path) -> Option<u32> {
+    let stat = std::fs::read_to_string(dir.join("stat")).ok()?;
+    stat[stat.rfind(')')? + 1..].split_whitespace().nth(1)?.parse().ok()
+}
+
+/// The program a service runs is the child of its `supervise-daemon` (whose command line names the service).
+pub fn find_supervised_pid(proc_dir: &Path, init_name: &str) -> Option<u32> {
+    let procs: Vec<(u32, PathBuf)> = std::fs::read_dir(proc_dir).ok()?.flatten().filter_map(|e| Some((e.file_name().to_string_lossy().parse().ok()?, e.path()))).collect();
+    let sup = procs.iter().find(|(_, d)| { let a = read_cmdline(d); a.first().map_or(false, |x| x.ends_with("supervise-daemon")) && a.iter().skip(1).any(|w| w == init_name) })?.0;
+    procs.iter().filter(|(_, d)| read_ppid(d) == Some(sup)).map(|(p, _)| *p).min()
+}
+
 /// The process id of a running service: the process owned by the service's user whose command line is exactly the service's command.
 pub fn find_pid(proc_dir: &Path, d: &ServiceDef, uid: Option<u32>) -> Option<u32> {
     let want = services::split_command(&d.command).ok()?;
@@ -243,7 +259,7 @@ fn report_loop() {
             if let Ok(d) = load(ctx.root, &n) {
                 let st = format!("{:?}", status_of(&ctx, &d)).to_lowercase();
                 let uid = account::users(ctx.root).into_iter().find(|u| u.name == d.user).map(|u| u.uid);
-                let pid = find_pid(Path::new("/proc"), &d, uid).map_or("-".to_string(), |p| p.to_string());
+                let pid = find_supervised_pid(Path::new("/proc"), &d.init_name()).or_else(|| find_pid(Path::new("/proc"), &d, uid)).map_or("-".to_string(), |p| p.to_string());
                 let line = format!("EXEC85_SVC name={n} status={st} pid={pid}");
                 if last.get(&n) != Some(&line) { crate::supervisor::console_line(&line); last.insert(n, line); }
             }
@@ -411,6 +427,27 @@ mod tests {
         let other = ServiceDef { command: "sleep 4321".into(), ..d.clone() };
         assert_eq!(find_pid(Path::new("/proc"), &other, None), None);
         child.kill().unwrap(); child.wait().unwrap();
+    }
+
+    #[test]
+    fn finds_the_child_of_the_supervisor() {
+        let d = std::env::temp_dir().join(format!("exec85-fakeproc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mk = |pid: u32, ppid: u32, cmd: &[&str]| {
+            let p = d.join(pid.to_string());
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join("cmdline"), cmd.iter().map(|c| format!("{c}\0")).collect::<String>()).unwrap();
+            std::fs::write(p.join("stat"), format!("{pid} (some (odd) name) S {ppid} 0 0\n")).unwrap();
+        };
+        mk(1, 0, &["/sbin/init"]);
+        mk(50, 1, &["supervise-daemon", "exec85-ticker", "--start", "--", "sleep", "100000"]);
+        mk(51, 50, &["sleep", "100000"]);
+        mk(60, 1, &["/usr/sbin/supervise-daemon", "exec85-other", "--start"]);
+        mk(61, 60, &["python3"]);
+        assert_eq!(find_supervised_pid(&d, "exec85-ticker"), Some(51));
+        assert_eq!(find_supervised_pid(&d, "exec85-other"), Some(61));
+        assert_eq!(find_supervised_pid(&d, "exec85-none"), None);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
