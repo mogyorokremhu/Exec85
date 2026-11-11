@@ -85,7 +85,8 @@ pub fn hosts(hostname: &str) -> String {
 const GROUPS_FOR_FIRST_USER: [&str; 5] = ["wheel", "input", "video", "audio", "users"];
 
 /// Settings files written into the new root.
-pub fn write_settings(cfg: &Config, root: &Path, zoneinfo: &Path, root_uuid: &str, esp_id: &str) -> Result<(), String> {
+/// `ids` = (root uuid, boot partition id) for a real installation; `None` for the testing "set up in memory" path.
+pub fn write_settings(cfg: &Config, root: &Path, zoneinfo: &Path, ids: Option<(&str, &str)>) -> Result<(), String> {
     let w = |rel: &str, text: String| -> Result<(), String> {
         let p = root.join(rel);
         if let Some(d) = p.parent() { fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?; }
@@ -93,10 +94,12 @@ pub fn write_settings(cfg: &Config, root: &Path, zoneinfo: &Path, root_uuid: &st
     };
     w("etc/hostname", format!("{}\n", cfg.hostname))?;
     w("etc/hosts", hosts(&cfg.hostname))?;
-    w("etc/fstab", fstab(root_uuid, esp_id))?;
+    if let Some((root_uuid, esp_id)) = ids {
+        w("etc/fstab", fstab(root_uuid, esp_id))?;
+        w("etc/exec85/installed", "1\n".to_string())?;
+    }
     w("etc/exec85/theme", if cfg.dark { "dark\n" } else { "light\n" }.to_string())?;
     w("etc/exec85/keyboard", format!("{}\n", cfg.layout.id()))?;
-    w("etc/exec85/installed", "1\n".to_string())?;
     w("etc/timezone", format!("{}\n", cfg.timezone))?;
     let zone = zoneinfo.join(&cfg.timezone);
     if cfg.timezone != "UTC" && zone.is_file() {
@@ -210,7 +213,7 @@ pub fn run_install(cfg: &Config, paths: &Paths, report: &mut dyn FnMut(usize, &s
         let _ = fs::remove_dir_all(target.join("usr/share/exec85/install")); // the install files are not part of the installed system
 
         step(4, report);
-        write_settings(cfg, target, &paths.zoneinfo, &root_uuid, &esp_id)?;
+        write_settings(cfg, target, &paths.zoneinfo, Some((&root_uuid, &esp_id)))?;
         step(5, report);
         create_accounts(cfg, target)?;
 
@@ -234,15 +237,32 @@ pub fn run_install(cfg: &Config, paths: &Paths, report: &mut dyn FnMut(usize, &s
     result
 }
 
+// ---- TESTING-ONLY: "set up in memory" (no disk is touched) ------------------------------------------
+// Used by the testing build's "Skip installation" choice. To remove the feature, delete everything marked
+// TESTING-ONLY (this block, the pseudo-disk in installer.rs, the supervisor branch and the build flag).
+
+pub const MEMORY_STEPS: [&str; 2] = ["Applying settings", "Creating your account"];
+
+/// Apply the wizard's choices to the RUNNING (RAM-only) system: settings, user account, host name.
+pub fn setup_in_memory(cfg: &Config, root: &Path, zoneinfo: &Path, report: &mut dyn FnMut(usize, &str)) -> Result<(), String> {
+    report(0, MEMORY_STEPS[0]);
+    write_settings(cfg, root, zoneinfo, None)?;
+    report(1, MEMORY_STEPS[1]);
+    create_accounts(cfg, root)?;
+    if root == Path::new("/") { let _ = fs::write("/proc/sys/kernel/hostname", &cfg.hostname); }
+    Ok(())
+}
+
 /// Drive `run_install`, publishing progress into `shared`.
 pub fn run_to_shared(cfg: Config, paths: Paths, shared: Shared, wake: impl Fn()) {
     let set = |f: &mut dyn FnMut(&mut Progress)| { f(&mut shared.lock().unwrap()); wake(); };
-    set(&mut |p| { p.total = STEPS.len(); p.done = 0; });
+    let memory_only = cfg.disk.is_empty(); // TESTING-ONLY: no disk chosen = set up in memory
+    set(&mut |p| { p.total = if memory_only { MEMORY_STEPS.len() } else { STEPS.len() }; p.done = 0; });
     let mut report = |i: usize, label: &str| {
-        set(&mut |p| { p.done = i; p.current = label.to_string(); p.log.push(format!("[{}/{}] {}", i + 1, STEPS.len(), label)); });
-        println!("EXEC85_INSTALL step={}/{} {}", i + 1, STEPS.len(), label.replace(' ', "_"));
+        set(&mut |p| { p.done = i; p.current = label.to_string(); p.log.push(format!("[{}/{}] {}", i + 1, if memory_only { MEMORY_STEPS.len() } else { STEPS.len() }, label)); });
+        println!("EXEC85_INSTALL step={}/{} {}", i + 1, if memory_only { MEMORY_STEPS.len() } else { STEPS.len() }, label.replace(' ', "_"));
     };
-    let r = run_install(&cfg, &paths, &mut report);
+    let r = if memory_only { setup_in_memory(&cfg, Path::new("/"), &paths.zoneinfo, &mut report) } else { run_install(&cfg, &paths, &mut report) };
     match &r {
         Ok(()) => println!("EXEC85_INSTALL result=ok"),
         Err(e) => println!("EXEC85_INSTALL result=failed {}", e.replace(' ', "_")),
@@ -291,7 +311,7 @@ mod tests {
         fs::write(root.join("etc/shadow"), "root:*::0:::::\n").unwrap();
         fs::write(root.join("etc/group"), "root:x:0:root\nwheel:x:10:root\ninput:x:101:\n").unwrap();
 
-        write_settings(&cfg(), &root, &zi, "uuid-root", "AB12-CD34").unwrap();
+        write_settings(&cfg(), &root, &zi, Some(("uuid-root", "AB12-CD34"))).unwrap();
         create_accounts(&cfg(), &root).unwrap();
         let rd = |p: &str| fs::read_to_string(root.join(p)).unwrap();
         assert_eq!(rd("etc/hostname"), "lab85\n");
@@ -306,6 +326,29 @@ mod tests {
         assert!(account::authenticate(&root, "tester", "pw-1").is_ok());
         assert_eq!(account::authenticate(&root, "root", "pw-1"), Err(account::AuthError::Locked));
         assert!(rd("etc/group").contains("wheel:x:10:root,tester"));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn setting_up_in_memory_writes_the_account_but_no_disk_files() {
+        let base = std::env::temp_dir().join(format!("exec85-mem-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (root, zi) = (base.join("root"), base.join("zoneinfo"));
+        fs::create_dir_all(root.join("etc")).unwrap();
+        fs::create_dir_all(&zi).unwrap();
+        fs::write(root.join("etc/passwd"), "root:x:0:0:root:/root:/bin/ash\n").unwrap();
+        fs::write(root.join("etc/shadow"), "root:*::0:::::\n").unwrap();
+        fs::write(root.join("etc/group"), "root:x:0:root\nwheel:x:10:root\n").unwrap();
+        let mut c = cfg();
+        c.disk = String::new();
+        let mut steps = Vec::new();
+        setup_in_memory(&c, &root, &zi, &mut |i, l| steps.push((i, l.to_string()))).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert!(account::authenticate(&root, "tester", "pw-1").is_ok());
+        assert_eq!(fs::read_to_string(root.join("etc/exec85/theme")).unwrap(), "light\n");
+        assert_eq!(fs::read_to_string(root.join("etc/exec85/keyboard")).unwrap(), "hu\n");
+        assert!(!root.join("etc/fstab").exists(), "nothing that belongs to a disk install");
+        assert!(!root.join("etc/exec85/installed").exists());
         let _ = fs::remove_dir_all(&base);
     }
 

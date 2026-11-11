@@ -174,7 +174,9 @@ fn stage_installer() -> ! {
         let tx = run_tx.clone();
         thread::spawn(move || install::run_to_shared(cfg, install::Paths::live(), shared, move || { let _ = tx.send(Event::Wake); }));
     });
-    let mut inst = installer::Installer::new(cols, rows, system_mode(), installer::load_timezones(Path::new("/usr/share/zoneinfo")), Box::new(disks::system_disks), runner);
+    // TESTING-ONLY: the testing build is started with "exec85.testing" on the kernel command line.
+    let testing = supervisor::cmdline_has("exec85.testing");
+    let mut inst = installer::Installer::new(cols, rows, system_mode(), installer::load_timezones(Path::new("/usr/share/zoneinfo")), testing, Box::new(disks::system_disks), runner);
 
     installer::draw(&inst, &mut s.canvas, &s.m);
     s.show();
@@ -189,6 +191,7 @@ fn stage_installer() -> ! {
                 Event::Key(k) => match inst.handle(k) {
                     Some(installer::Outcome::Reboot) => std::process::exit(supervisor::EXIT_REBOOT),
                     Some(installer::Outcome::Live) => std::process::exit(supervisor::EXIT_TRY_LIVE),
+                    Some(installer::Outcome::SetupDone) => std::process::exit(supervisor::EXIT_SETUP_DONE), // TESTING-ONLY
                     None => {}
                 },
                 Event::Wake => inst.poll(),
@@ -267,7 +270,8 @@ fn render_to_file(args: &[String]) {
                 disks::Disk { name: "sda".into(), bytes: 4_000_787_030_016, model: "ATA ST4000LM024".into(), removable: false },
             ];
             let tzs = ["UTC", "Africa/Cairo", "America/New_York", "Asia/Tokyo", "Europe/Berlin", "Europe/Budapest", "Europe/London"].iter().map(|s| s.to_string()).collect();
-            let mut inst = installer::Installer::new(cols, rows, mode, tzs, Box::new(disks), Box::new(|_, _| {}));
+            let testing = args.iter().any(|a| a == "--testing");
+            let mut inst = installer::Installer::new(cols, rows, mode, tzs, testing, Box::new(disks), Box::new(|_, _| {}));
             for k in parsed { inst.handle(k); }
             installer::draw(&inst, &mut c, &m);
         }

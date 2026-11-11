@@ -37,7 +37,7 @@ impl Step {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Outcome { Reboot, Live }
+pub enum Outcome { Reboot, Live, SetupDone /* TESTING-ONLY */ }
 
 /// A list you move through with the arrow keys; typing narrows it down.
 #[derive(Clone, Debug)]
@@ -103,9 +103,14 @@ pub struct Installer {
     pub error: Option<String>,
     pub progress: Shared,
     pub failed: Option<String>,
+    /// TESTING-ONLY: offer "Skip installation" (set up in memory) as the first choice on the Disk step.
+    pub testing: bool,
     disk_source: Box<dyn Fn() -> Vec<Disk>>,
     runner: Box<dyn Fn(Config, Shared)>,
 }
+
+/// TESTING-ONLY: name of the pseudo-disk that means "do not install, set up in memory".
+pub const SKIP_NAME: &str = "(memory)";
 
 /// Time zone names from the system's tz database (zone1970.tab), with UTC first.
 pub fn load_timezones(dir: &std::path::Path) -> Vec<String> {
@@ -123,7 +128,7 @@ fn clean(s: &str) -> String { if s.is_empty() { "-".into() } else { s.replace(' 
 impl Installer {
     /// `disk_source` lists the disks (called again whenever the Disk step is entered);
     /// `runner` starts the installation in the background and fills in the shared progress.
-    pub fn new(cols: usize, rows: usize, mode: Mode, timezones: Vec<String>, disk_source: Box<dyn Fn() -> Vec<Disk>>, runner: Box<dyn Fn(Config, Shared)>) -> Installer {
+    pub fn new(cols: usize, rows: usize, mode: Mode, timezones: Vec<String>, testing: bool, disk_source: Box<dyn Fn() -> Vec<Disk>>, runner: Box<dyn Fn(Config, Shared)>) -> Installer {
         let mut tz = Picker::new(timezones, true);
         let utc = tz.items.iter().position(|t| t == "UTC").unwrap_or(0);
         tz.select(utc, 10);
@@ -136,7 +141,7 @@ impl Installer {
             theme, kb: Picker::new(kb_items, true), tz, disk_pk: Picker::new(vec![], false), disks: vec![],
             hostname: "exec85".into(), username: String::new(), pw1: String::new(), pw2: String::new(), pw_field: 0, empty_warned: false,
             confirm: String::new(), error: None, progress: Arc::new(Mutex::new(Progress::default())), failed: None,
-            disk_source, runner,
+            testing, disk_source, runner,
         }
     }
 
@@ -166,11 +171,13 @@ impl Installer {
     // ---- results ------------------------------------------------------------------------------
 
     pub fn selected_disk(&self) -> Option<&Disk> { self.disk_pk.current().and_then(|i| self.disks.get(i)) }
+    /// TESTING-ONLY: is the "Skip installation" choice highlighted?
+    pub fn skip_selected(&self) -> bool { self.testing && self.selected_disk().map_or(false, |d| d.name == SKIP_NAME) }
     pub fn selected_tz(&self) -> &str { self.tz.current_text().unwrap_or("UTC") }
 
     pub fn config(&self) -> Config {
         Config {
-            disk: self.selected_disk().map(|d| d.name.clone()).unwrap_or_default(),
+            disk: if self.skip_selected() { String::new() } else { self.selected_disk().map(|d| d.name.clone()).unwrap_or_default() },
             hostname: self.hostname.clone(), username: self.username.clone(),
             password: if self.pw1.is_empty() { None } else { Some(self.pw1.clone()) },
             layout: self.layout, timezone: self.selected_tz().to_string(), dark: self.mode == Mode::Dark,
@@ -200,7 +207,9 @@ impl Installer {
         let rows = self.list_rows();
         if s == Step::Disk {
             self.disks = (self.disk_source)();
-            let items = self.disks.iter().map(|d| format!("{:<9}{:>7}  {}", d.name, fmt_disk(d.bytes), d.model)).collect();
+            // TESTING-ONLY: the skip choice goes first
+            if self.testing { self.disks.insert(0, Disk { name: SKIP_NAME.into(), bytes: 0, model: "TESTING ONLY".into(), removable: false }); }
+            let items = self.disks.iter().map(|d| if d.name == SKIP_NAME { "Skip installation   (testing only: set up in memory, nothing is erased)".to_string() } else { format!("{:<9}{:>7}  {}", d.name, fmt_disk(d.bytes), d.model) }).collect();
             self.disk_pk = Picker::new(items, false);
             self.disk_pk.move_by(0, rows);
         }
@@ -229,7 +238,9 @@ impl Installer {
             Step::Installing => None,
             Step::Done => {
                 if k.code == code::ENTER {
-                    if self.failed.is_some() { self.failed = None; self.goto(Step::Disk); } else { return Some(Outcome::Reboot); }
+                    if self.failed.is_some() { self.failed = None; self.goto(Step::Disk); }
+                    else if self.skip_selected() { return Some(Outcome::SetupDone); } // TESTING-ONLY
+                    else { return Some(Outcome::Reboot); }
                 } else if k.code == code::ESC && self.failed.is_some() { self.failed = None; self.goto(Step::Disk); }
                 None
             }
@@ -313,6 +324,10 @@ impl Installer {
 
     fn handle_confirm(&mut self, k: Key) {
         let typed = self.typed(&k);
+        if self.skip_selected() { // TESTING-ONLY: nothing to erase, so no disk name has to be typed
+            match k.code { code::ESC => self.back(), code::ENTER => self.start_install(), _ => {} }
+            return;
+        }
         match k.code {
             code::ESC => self.back(),
             code::BACKSPACE => { self.confirm.pop(); }
@@ -437,15 +452,19 @@ pub fn draw(inst: &Installer, c: &mut Canvas, m: &Metrics) {
                 ("Device name", inst.hostname.clone()),
                 ("User", inst.username.clone()),
                 ("Password", if inst.pw1.is_empty() { "none".to_string() } else { "set".to_string() }),
-                ("Disk", disk.map_or("-".to_string(), |d| format!("{} ({}, {})", d.name, fmt_disk(d.bytes), d.model))),
+                ("Disk", if inst.skip_selected() { "none (testing: set up in memory)".to_string() } else { disk.map_or("-".to_string(), |d| format!("{} ({}, {})", d.name, fmt_disk(d.bytes), d.model)) }),
             ];
             for (i, (k, v)) in rows.iter().enumerate() {
                 p.text(x, a.y + 2 + i, k, t.dim, None);
                 p.clip(x + 13, a.y + 2 + i, w.saturating_sub(13), v, t.text, t.panel);
             }
             let name = disk.map_or("", |d| d.name.as_str());
-            let n = p.paragraph(x, a.y + 10, w, &format!("ALL DATA on {name} will be erased. To continue, type the disk name ({name}) and press Enter. Esc goes back."), t.accent, t.panel);
-            p.field(x, a.y + 10 + n + 1, w.min(24), &inst.confirm, true, false);
+            if inst.skip_selected() { // TESTING-ONLY
+                p.paragraph(x, a.y + 10, w, "TESTING BUILD: nothing will be installed or erased. Your settings and account are created in memory only, then you go to the login screen. Press Enter to continue, Esc to go back.", t.accent, t.panel);
+            } else {
+                let n = p.paragraph(x, a.y + 10, w, &format!("ALL DATA on {name} will be erased. To continue, type the disk name ({name}) and press Enter. Esc goes back."), t.accent, t.panel);
+                p.field(x, a.y + 10 + n + 1, w.min(24), &inst.confirm, true, false);
+            }
         }
         Step::Installing => {
             let pr = inst.progress.lock().unwrap().clone();
@@ -461,6 +480,10 @@ pub fn draw(inst: &Installer, c: &mut Canvas, m: &Metrics) {
             for (i, l) in pr.log[start..].iter().enumerate() { p.clip(x, a.y + 8 + i, w, l, t.dim, t.panel); }
         }
         Step::Done => match &inst.failed {
+            None if inst.skip_selected() => { // TESTING-ONLY
+                heading(&mut p, "Set up in memory");
+                help(&mut p, "Your settings and account exist until you restart. Nothing was written to any disk. Press Enter to go to the login screen.");
+            }
             None => {
                 heading(&mut p, "Installation complete");
                 help(&mut p, "Exec85 is installed. Remove the installation medium (USB stick or disc), then press Enter to restart.");
@@ -518,7 +541,7 @@ mod tests {
 
     fn inst_with(started: Arc<AtomicUsize>, ds: Vec<Disk>) -> Installer {
         let tzs = ["UTC", "Europe/Berlin", "Europe/Budapest", "America/New_York", "Asia/Tokyo"].iter().map(|s| s.to_string()).collect();
-        Installer::new(100, 40, Mode::Dark, tzs, Box::new(move || ds.clone()), Box::new(move |_cfg, shared| {
+        Installer::new(100, 40, Mode::Dark, tzs, false, Box::new(move || ds.clone()), Box::new(move |_cfg, shared| {
             started.fetch_add(1, Ordering::SeqCst);
             let mut p = shared.lock().unwrap();
             p.result = Some(Ok(())); p.done = p.total;
@@ -706,9 +729,60 @@ mod tests {
         assert_eq!((c.disk.as_str(), c.hostname.as_str(), c.username.as_str()), ("sda", "exec85", "tester"));
     }
 
+    // ---- TESTING-ONLY: the "Skip installation" choice ----
+
+    fn testing_inst(started: Arc<AtomicUsize>) -> Installer {
+        Installer::new(100, 40, Mode::Dark, vec!["UTC".into()], true, Box::new(disks), Box::new(move |cfg, shared| {
+            started.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(cfg.disk, "", "skipping means no disk is handed to the installer");
+            let mut p = shared.lock().unwrap();
+            p.result = Some(Ok(())); p.done = p.total;
+        }))
+    }
+
+    #[test]
+    fn testing_build_offers_skip_first_and_it_needs_no_disk_name() {
+        let started = Arc::new(AtomicUsize::new(0));
+        let mut i = testing_inst(started.clone());
+        i.username = "tester".into();
+        i.goto(Step::Disk);
+        assert!(i.disk_pk.items[0].starts_with("Skip installation"));
+        assert_eq!(i.disk_pk.items.len(), 3, "skip + the two real disks");
+        assert!(i.skip_selected());
+        press(&mut i, "enter");
+        assert_eq!(i.step, Step::Confirm);
+        assert!(press(&mut i, "x").is_empty(), "typing does nothing here");
+        press(&mut i, "enter");
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        i.poll();
+        assert_eq!(i.step, Step::Done);
+        assert_eq!(press(&mut i, "enter"), vec![Outcome::SetupDone]);
+        assert!(i.state_line().contains("disk=(memory)"));
+    }
+
+    #[test]
+    fn testing_build_still_installs_normally_when_a_disk_is_chosen() {
+        let mut i = Installer::new(100, 40, Mode::Dark, vec!["UTC".into()], true, Box::new(disks), Box::new(|cfg, s| { assert_eq!(cfg.disk, "sda"); s.lock().unwrap().result = Some(Ok(())); }));
+        i.goto(Step::Disk);
+        press(&mut i, "down,down,enter"); // third entry = sda
+        assert_eq!(i.step, Step::Confirm);
+        type_text(&mut i, "sda");
+        press(&mut i, "enter");
+        i.poll();
+        assert_eq!(press(&mut i, "enter"), vec![Outcome::Reboot]);
+    }
+
+    #[test]
+    fn normal_build_has_no_skip_choice() {
+        let mut i = inst_with(Arc::default(), disks());
+        i.goto(Step::Disk);
+        assert!(!i.disk_pk.items.iter().any(|s| s.contains("Skip")));
+        assert!(!i.skip_selected());
+    }
+
     #[test]
     fn a_failed_installation_goes_back_to_choosing_a_disk() {
-        let mut i = Installer::new(100, 40, Mode::Dark, vec!["UTC".into()], Box::new(disks), Box::new(|_, s| { s.lock().unwrap().result = Some(Err("boom".into())); }));
+        let mut i = Installer::new(100, 40, Mode::Dark, vec!["UTC".into()], false, Box::new(disks), Box::new(|_, s| { s.lock().unwrap().result = Some(Err("boom".into())); }));
         i.step = Step::Confirm;
         i.goto(Step::Disk);
         press(&mut i, "enter");

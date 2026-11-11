@@ -30,7 +30,15 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           cd out
-          mv exec85.iso "exec85-${TAG}.iso"
+          # Two flavors, released separately:
+          #   vX.Y.Z           the normal alpha release
+          #   vX.Y.Z-testing   the TESTING build (installer can be skipped); shown by GitHub as a "Pre-release"
+          case "$TAG" in
+            *-testing) SRC_ISO=exec85-testing.iso; FLAVOR="TESTING (pre-alpha)"; PRE="--prerelease" ;;
+            *)         SRC_ISO=exec85.iso;         FLAVOR="(alpha)";             PRE="" ;;
+          esac
+          mv "$SRC_ISO" "exec85-${TAG}.iso"
+          rm -f exec85.iso exec85-testing.iso
           sha256sum "exec85-${TAG}.iso" > SHA256SUMS
           cat sizes.txt SHA256SUMS
           # Release text comes from docs/releases/<tag>.md when that file exists (written by a person);
@@ -42,5 +50,5 @@ jobs:
               "Check the download with \`sha256sum -c SHA256SUMS\`." > notes.md
           fi
           gh release create "$TAG" "exec85-${TAG}.iso" SHA256SUMS \
-            --repo "${{ github.repository }}" --title "Exec85 ${TAG} (alpha)" \
-            --target "${{ github.sha }}" --prerelease --notes-file notes.md
+            --repo "${{ github.repository }}" --title "Exec85 ${TAG} ${FLAVOR}" \
+            --target "${{ github.sha }}" $PRE --notes-file notes.md

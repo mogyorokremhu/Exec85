@@ -26,6 +26,7 @@ jobs:
           name: exec85-iso
           path: |
             out/exec85.iso
+            out/exec85-testing.iso
             out/sizes.txt
 
   boot-test:
