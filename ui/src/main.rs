@@ -23,6 +23,7 @@ mod login;
 mod paint;
 mod shell;
 mod supervisor;
+mod services;
 mod sys;
 mod ui;
 
