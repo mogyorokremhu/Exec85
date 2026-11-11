@@ -1,9 +1,14 @@
 name: release
-# Push a tag like v0.1.0 to publish a release: it builds the ISO, boot-tests it
+# Push a tag like v0.1.0 (or press Run workflow and type the tag) to publish a release: it builds the ISO, boot-tests it
 # (BIOS + UEFI) and only then attaches the ISO and checksum to a GitHub release.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:      # "Run workflow" button: creates the tag for you
+    inputs:
+      tag:
+        description: 'Release tag to create, e.g. v0.1.0'
+        required: true
 
 permissions:
   contents: write
@@ -21,7 +26,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           cd out
           mv exec85.iso "exec85-${TAG}.iso"
@@ -46,4 +51,4 @@ jobs:
           sed -i 's/^          //' notes.md
           gh release create "$TAG" "exec85-${TAG}.iso" SHA256SUMS \
             --repo "${{ github.repository }}" --title "Exec85 ${TAG} (alpha)" \
-            --prerelease --notes-file notes.md
+            --target "${{ github.sha }}" --prerelease --notes-file notes.md
