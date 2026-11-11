@@ -40,3 +40,22 @@ Reading these honestly:
 - Most of the 183 MB "used" is the live root filesystem itself sitting in RAM, not running programs. The installed system (M3) will show the real idle figure.
 - No Debian comparison exists yet, so no "faster/lighter than Debian" claim is made.
 - The module set is not pruned yet; trimming it is the obvious first size and boot-time win.
+
+### M2 - the shell (CI run 13, commit 6c0028e)
+
+Same setup as M1 (GitHub runner with KVM, 512 MB VM, live ISO, verbose kernel log).
+
+| | BIOS | UEFI |
+|---|---|---|
+| Kernel clock when the shell is drawn | 3.09 s | 3.74 s |
+| Wall clock, QEMU start to shell | 5.13 s | 14.48 s (OVMF firmware is slow) |
+| Memory used, idle (live image) | 185,916 kB of 473,476 kB | 185,324 kB of 467,756 kB |
+| Exec85 UI process RSS | 4,708 kB | 4,708 kB |
+
+Change from M1: +0.6 s kernel clock, +2.4 MB used, +0.4 MB UI process. The M1 and M2 runs are different
+CI machines, so differences this small are within run-to-run noise; the point is that the full shell
+costs about 4.7 MB of RAM. The UI binary is still a single static file with no dependencies.
+
+The boot test now also drives the real ISO with QEMU's virtual keyboard: 37 checks per firmware
+(type-ahead, opening folders, menus, theme switching verified by screenshot pixels, pane focus,
+layout toggles, dialogs). Screenshots from each run are in the `boot-bios` / `boot-uefi` artifacts.

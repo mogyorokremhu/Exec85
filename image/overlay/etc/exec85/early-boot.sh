@@ -15,6 +15,7 @@ mount -t tmpfs -o mode=1777 tmpfs /tmp
 echo /sbin/mdev > /proc/sys/kernel/hotplug
 mdev -s
 find /sys -name modalias -type f -print0 2>/dev/null | xargs -0 cat 2>/dev/null | sort -u | xargs modprobe -b -a 2>/dev/null
-modprobe -a evdev 2>/dev/null
+# Input drivers explicitly too (harmless if built in or already loaded).
+modprobe -a evdev i8042 atkbd hid_generic usbhid 2>/dev/null
 mdev -s
 exit 0

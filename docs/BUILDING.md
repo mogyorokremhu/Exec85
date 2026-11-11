@@ -46,3 +46,21 @@ The UI program alone can be tested anywhere Rust is installed:
 cd ui && cargo test
 cargo run --release -- --ppm /tmp/screen.ppm   # renders the screen to an image file
 ```
+
+## Trying the shell (milestone 2)
+
+Click into the QEMU window so it receives your keyboard (press `Ctrl+Alt+G` to give the mouse back).
+
+| Keys | What happens |
+|---|---|
+| Up / Down, PgUp / PgDn, Home / End | move through the file list |
+| Enter or Right | open the selected folder; Backspace or Left goes up |
+| a letter, e.g. `e` | jump to the next name starting with it |
+| F10, or Alt+F / Alt+V / Alt+W / Alt+H | open the menu bar; arrows move, Enter chooses, Esc closes |
+| View > Light theme / Dark theme | the whole interface switches theme |
+| Tab / Shift+Tab | move between the drive row, Files and Details |
+| Ctrl+L, Ctrl+D, Ctrl+H | stack the panes, hide the details pane, show hidden files |
+| F1 | the full shortcut list |
+| File > Shut down / Restart | asks for confirmation first (Y / N) |
+
+You start in `/`, the live system's own files (it runs from RAM; nothing on your PC is touched).
