@@ -6,7 +6,7 @@ A lightweight, keyboard-driven, Linux-based server OS with a 1985-style tiled in
 
 ## What it is
 
-Exec85 is a small operating system for home servers, built on the Linux kernel. Instead of a full desktop or a bare command line, it boots into a simple tiled interface inspired by the MS-DOS Executive from Windows 1.0: a menu bar, a drive row, and a file list you move through with the arrow keys.
+Exec85 is a small, general-purpose operating system for home servers, built on the Linux kernel. Instead of a full desktop or a bare command line, it boots into a simple tiled interface inspired by the MS-DOS Executive from Windows 1.0: a menu bar, a drive row, and a file list you move through with the arrow keys.
 
 The retro look is on purpose, and so is the speed. Exec85 loads only what it needs, so more of the machine is left for the things you actually run on it.
 
@@ -14,7 +14,8 @@ The retro look is on purpose, and so is the speed. Exec85 loads only what it nee
 
 - **Fast and light:** boot quicker and use less memory at idle than a typical Linux server install.
 - **Keyboard first:** everything reachable with the arrow keys and a few shortcuts.
-- **Made for small servers:** run game servers, bots and websites on old hardware, such as a laptop with its lid closed.
+- **Run any server software:** install the programs you want and run any of them as a background service. Game servers, bots, websites, file sharing, or anything else.
+- **Works on ordinary hardware:** any x86_64 PC or laptop, including old ones, such as a laptop running with its lid closed.
 - **Simple setup:** an installer that asks for the basics (theme, username, optional password, device name) and a login screen on every start.
 
 ## Planned features
@@ -23,8 +24,9 @@ The retro look is on purpose, and so is the speed. Exec85 loads only what it nee
 
 - Installer with light and dark mode
 - Login screen
-- Service manager to start, stop and watch your servers
-- Services keep running in the background, even with nobody logged in
+- Software installation from a package manager
+- Service manager to add, start, stop and watch any program as a service
+- Services start at boot and keep running in the background, even with nobody logged in
 
 ### Apps
 
@@ -45,7 +47,7 @@ The retro look is on purpose, and so is the speed. Exec85 loads only what it nee
 2. Shell: menu bar, drive row and arrow-key file list
 3. Installer and login screen
 4. Core apps
-5. Service manager
+5. Service manager and software installation
 6. Test on real hardware
 7. First public release
 
