@@ -69,13 +69,13 @@ def window_pixel(shot):   # blank cell inside the left window's bottom margin (s
 
 
 class VM:
-    def __init__(self, tag, cdrom=None, disk=None):
+    def __init__(self, tag, cdrom=None, disk=None, mem=None):
         self.tag = tag
         self.log = os.path.join(outdir, f"serial-{firmware}-{tag}.log")
         self.sock = os.path.join(outdir, f"mon-{firmware}-{tag}.sock")
         for p in (self.log, self.sock):
             if os.path.exists(p): os.remove(p)
-        cmd = ["qemu-system-x86_64", "-machine", "q35", "-accel", accel, "-m", str(MEM_MB), "-smp", "2", "-vga", "std", "-display", "none",
+        cmd = ["qemu-system-x86_64", "-machine", "q35", "-accel", accel, "-m", str(mem or MEM_MB), "-smp", "2", "-vga", "std", "-display", "none",
                "-no-reboot", "-serial", f"file:{self.log}", "-monitor", f"unix:{self.sock},server,nowait"]
         if cdrom: cmd += ["-cdrom", cdrom, "-boot", "d"]
         else: cmd += ["-boot", "c"]
@@ -443,7 +443,7 @@ def open_app(vm, index):
 
 def scenario_testing():
     I = "EXEC85_INSTALLER"
-    vm = VM("testing", cdrom=iso)          # no disk at all
+    vm = VM("testing", cdrom=iso, mem=3072)   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
     try:
         step("testing: installer is up", vm.wait_for(r"EXEC85_SCREEN installer", 600 if SLOW else 120) is not None)
         press(vm, "ret", I, step="theme")
