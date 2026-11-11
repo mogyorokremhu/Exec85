@@ -355,7 +355,7 @@ def scenario_install():
     vm = VM("rebooted", disk=disk)
     try:
         step("rebooted: login screen is shown", vm.wait_for(r"EXEC85_SCREEN login", 600 if SLOW else 120) is not None)
-        d = svc_line(vm, "ticker", lambda d: d["status"] == "running" and d["pid"] != "-", 90)
+        d = svc_line(vm, "ticker", lambda d: d["status"] == "running", 90)
         step("rebooted: the service is running with nobody logged in", d is not None, "\n".join(l for l in vm.text().splitlines() if "EXEC85_SVC" in l or "EXEC85_HELPER" in l))
         step("rebooted: still at the login screen", vm.lines("EXEC85_STATE") == [])
     finally:

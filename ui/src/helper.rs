@@ -221,11 +221,24 @@ fn read_ppid(dir: &Path) -> Option<u32> {
     stat[stat.rfind(')')? + 1..].split_whitespace().nth(1)?.parse().ok()
 }
 
-/// The program a service runs is the child of its `supervise-daemon` (whose command line names the service).
+/// The program a service runs is a descendant of its `supervise-daemon` (whose command line names the service).
+/// Several supervise-daemon processes may briefly exist (the one that daemonizes and the one that stays), so every one is considered.
 pub fn find_supervised_pid(proc_dir: &Path, init_name: &str) -> Option<u32> {
     let procs: Vec<(u32, PathBuf)> = std::fs::read_dir(proc_dir).ok()?.flatten().filter_map(|e| Some((e.file_name().to_string_lossy().parse().ok()?, e.path()))).collect();
-    let sup = procs.iter().find(|(_, d)| { let a = read_cmdline(d); a.first().map_or(false, |x| x.ends_with("supervise-daemon")) && a.iter().skip(1).any(|w| w == init_name) })?.0;
-    procs.iter().filter(|(_, d)| read_ppid(d) == Some(sup)).map(|(p, _)| *p).min()
+    let is_sup = |d: &Path| { let a = read_cmdline(d); a.first().map_or(false, |x| x.ends_with("supervise-daemon")) };
+    let named = |d: &Path| { let a = read_cmdline(d); a.iter().skip(1).any(|w| w == init_name) };
+    let info: Vec<(u32, Option<u32>, bool, bool)> = procs.iter().map(|(p, d)| (*p, read_ppid(d), is_sup(d), named(d))).collect();
+    let mut family: Vec<u32> = info.iter().filter(|(_, _, sup, nm)| *sup && *nm).map(|(p, ..)| *p).collect();
+    if family.is_empty() { return None; }
+    let mut found = Vec::new();
+    // walk down the tree a few levels
+    for _ in 0..4 {
+        let kids: Vec<&(u32, Option<u32>, bool, bool)> = info.iter().filter(|(p, pp, ..)| pp.map_or(false, |pp| family.contains(&pp)) && !family.contains(p)).collect();
+        if kids.is_empty() { break; }
+        for k in &kids { family.push(k.0); if !k.2 { found.push(k.0); } }
+        if !found.is_empty() { break; }
+    }
+    found.into_iter().min()
 }
 
 /// The process id of a running service: the process owned by the service's user whose command line is exactly the service's command.
@@ -447,6 +460,12 @@ mod tests {
         assert_eq!(find_supervised_pid(&d, "exec85-ticker"), Some(51));
         assert_eq!(find_supervised_pid(&d, "exec85-other"), Some(61));
         assert_eq!(find_supervised_pid(&d, "exec85-none"), None);
+        // a second, childless supervise-daemon with the same name (the launcher) must not hide the real one
+        mk(40, 1, &["supervise-daemon", "exec85-ticker", "--start"]);
+        assert_eq!(find_supervised_pid(&d, "exec85-ticker"), Some(51));
+        // a program that starts a helper of its own: the lowest pid below the supervisor wins
+        mk(52, 51, &["sleep-helper"]);
+        assert_eq!(find_supervised_pid(&d, "exec85-ticker"), Some(51));
         let _ = std::fs::remove_dir_all(&d);
     }
 
