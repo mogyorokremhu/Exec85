@@ -96,7 +96,8 @@ pub fn render_script(d: &ServiceDef) -> Result<String, String> {
     let _ = writeln!(s, "error_log={}", sh_quote(&d.log_path()));
     s.push_str("respawn_delay=2\nrespawn_max=0\n");
     for (k, v) in &d.env { let _ = writeln!(s, "export {k}={}", sh_quote(v)); }
-    s.push_str("\ndepend() {\n\tneed localmount\n\tuse net\n}\n\nstart_pre() {\n\tcheckpath --directory --owner root:root --mode 0755 /var/log/exec85\n}\n");
+    // The program opens its log file itself, after it has switched to the service's user, so that user must own the file.
+    let _ = write!(s, "\ndepend() {{\n\tneed localmount\n\tuse net\n}}\n\nstart_pre() {{\n\tcheckpath --directory --owner root:root --mode 0755 /var/log/exec85\n\tcheckpath --file --owner {} --mode 0644 {}\n}}\n", sh_quote(&d.user), sh_quote(&d.log_path()));
     Ok(s)
 }
 
@@ -176,7 +177,7 @@ mod tests {
     fn the_script_has_what_openrc_needs() {
         let s = render_script(&def()).unwrap();
         for want in ["#!/sbin/openrc-run", "supervisor=supervise-daemon", "command='java'", "command_user='tester'", "directory='/srv/mc'",
-                     "respawn_max=0", "output_log='/var/log/exec85/mc.log'", "export JAVA_OPTS='-Dx=1'", "use net"] {
+                     "respawn_max=0", "output_log='/var/log/exec85/mc.log'", "checkpath --file --owner 'tester' --mode 0644 '/var/log/exec85/mc.log'", "export JAVA_OPTS='-Dx=1'", "use net"] {
             assert!(s.contains(want), "missing {want} in:\n{s}");
         }
         assert!(s.contains("command_args='-Xmx2G -jar server.jar nogui'"), "ordinary arguments carry no quotes of their own:\n{s}");

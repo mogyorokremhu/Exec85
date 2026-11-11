@@ -272,20 +272,15 @@ fn report_loop() {
             if let Ok(d) = load(ctx.root, &n) {
                 let st = format!("{:?}", status_of(&ctx, &d)).to_lowercase();
                 let uid = account::users(ctx.root).into_iter().find(|u| u.name == d.user).map(|u| u.uid);
-                let pid = find_supervised_pid(Path::new("/proc"), &d.init_name()).or_else(|| find_pid(Path::new("/proc"), &d, uid)).map_or("-".to_string(), |p| p.to_string());
+                // OpenRC records the supervised program's process id itself; fall back to looking through /proc.
+                let recorded = std::fs::read_to_string(format!("/run/openrc/options/{}/child_pid", d.init_name())).ok().and_then(|v| v.trim().parse::<u32>().ok()).filter(|p| Path::new(&format!("/proc/{p}")).exists());
+                let pid = recorded.or_else(|| find_supervised_pid(Path::new("/proc"), &d.init_name())).or_else(|| find_pid(Path::new("/proc"), &d, uid)).map_or("-".to_string(), |p| p.to_string());
                 let up = std::fs::read_to_string("/proc/uptime").ok().and_then(|u| u.split_whitespace().next().map(|v| v.split('.').next().unwrap_or("0").to_string())).unwrap_or_default();
                 let line = format!("EXEC85_SVC name={n} status={st} pid={pid} up={up}");
                 if last.get(&n) != Some(&line) { crate::supervisor::console_line(&line); last.insert(n.clone(), line); }
                 // A service that is "running" but has no process of its own is probably failing to start: show why.
                 if pid == "-" && st == "running" {
                     let log = tail(&Path::new("/").join(d.log_path().trim_start_matches('/')), 3).replace('\n', " / ").replace(' ', "_");
-                    let dbg: Vec<String> = std::fs::read_dir("/proc").into_iter().flatten().flatten().filter_map(|e| {
-                        let pid: u32 = e.file_name().to_string_lossy().parse().ok()?;
-                        let c = read_cmdline(&e.path());
-                        let joined = c.join(" ");
-                        (joined.contains("sleep") || joined.contains("supervise")).then(|| format!("{pid}<{}:{}", read_ppid(&e.path()).unwrap_or(0), joined.chars().take(60).collect::<String>().replace(' ', "_")))
-                    }).take(6).collect();
-                    crate::supervisor::console_line(&format!("EXEC85_SVCDBG name={n} procs={}", dbg.join(",")));
                     let key = format!("{n}:log");
                     let line = format!("EXEC85_SVCLOG name={n} text={}", if log.is_empty() { "(empty)".to_string() } else { log.chars().take(300).collect() });
                     if last.get(&key) != Some(&line) { crate::supervisor::console_line(&line); last.insert(key, line); }
