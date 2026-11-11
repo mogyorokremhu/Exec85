@@ -14,6 +14,7 @@ pub mod notepad;
 pub mod paint;
 pub mod reversi;
 pub mod snake;
+pub mod terminal;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -86,6 +87,7 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Notepad => Box::new(notepad::Notepad::new(env)),
         Kind::Paint => Box::new(paint::Paint::new(env)),
         Kind::Monitor => Box::new(monitor::Monitor::new()),
+        Kind::Terminal => Box::new(terminal::Terminal::open(env)),
         Kind::DiskUsage => Box::new(diskusage::DiskUsage::new(env)),
         Kind::Reversi => Box::new(reversi::Reversi::new()),
         Kind::Snake => Box::new(snake::Snake::new(40, 20)),
