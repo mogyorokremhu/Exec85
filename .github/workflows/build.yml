@@ -1,0 +1,55 @@
+name: build-and-boot-test
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --manifest-path ui/Cargo.toml
+
+  build-iso:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ISO inside Alpine
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD":/src -v "$PWD/out":/out alpine:3.22 sh /src/scripts/build-image.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exec85-iso
+          path: |
+            out/exec85.iso
+            out/sizes.txt
+
+  boot-test:
+    needs: build-iso
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware: [bios, uefi]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: exec85-iso, path: out }
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 ovmf
+          sudo chmod 666 /dev/kvm || true
+          ls -l /dev/kvm || echo "no KVM on this runner: using software emulation (TCG)"
+      - name: Boot in QEMU (${{ matrix.firmware }})
+        run: python3 scripts/boot-test.py out/exec85.iso ${{ matrix.firmware }} results
+      - name: Summary
+        if: always()
+        run: |
+          { echo "### Boot test: ${{ matrix.firmware }}"; echo '```json'; cat results/result-${{ matrix.firmware }}.json 2>/dev/null; echo '```'; cat out/sizes.txt; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boot-${{ matrix.firmware }}
+          path: results/
