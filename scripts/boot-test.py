@@ -508,7 +508,7 @@ def scenario_testing():
         pid1 = d["pid"]
         terminal_run(vm, "wget -q -O /dev/null http://127.0.0.1:8080/; echo HTTP=$?", "HTTP=0", 60, "services: the website answers")
         n = svc_count(vm, "web")
-        terminal_run(vm, "pkill -f 8080; echo KIL$((1+1))", "KIL2", 30, "services: kill the process")
+        terminal_run(vm, "pkill -f 8080; echo KIL$((3-1))", "KIL2", 30, "services: kill the process")
         d = svc_line(vm, "web", lambda d: d["status"] == "running" and d["pid"] not in ("-", pid1), 60, after=n)
         step("services: it comes back by itself with a new process", d is not None, f"old pid {pid1}")
         terminal_run(vm, "wget -q -O /dev/null http://127.0.0.1:8080/; echo HTTP2=$?", "HTTP2=0", 60, "services: the website answers again")
