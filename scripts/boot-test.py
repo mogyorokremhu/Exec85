@@ -237,7 +237,7 @@ def scenario_live():
         vm.stop()
 
 
-PW_KEYS = ["s", "e", "c", "r", "e", "t", "7", "slash"]   # on the Hungarian layout, the key at the US "/" position types "-"  =>  "secret7-"
+PW_KEYS = ["s", "e", "c", "r", "e", "t", "7", "minus"]   # => "secret7-" (the installed keyboard is the UK one, which the terminal tests below also type on)
 
 def scenario_install():
     disk = os.path.join(outdir, f"disk-{firmware}.img")
@@ -251,7 +251,7 @@ def scenario_install():
         press(vm, "down", I, theme="light")
         step("install: theme changes live", bar_pixel(vm.screenshot("i1-theme-light")) == LIGHT["bar"])
         press(vm, "ret", I, step="keyboard")
-        typed(vm, ["h", "u", "n", "g"], I, sel="Hungarian_(hu)", layout="hu", filter="hung")
+        typed(vm, ["u", "k"], I, sel="English_(UK)_(uk)", layout="uk", filter="uk")
         press(vm, "ret", I, step="timezone")
         typed(vm, ["b", "u", "d", "a", "p", "e", "s", "t"], I, sel="Europe/Budapest")
         press(vm, "ret", I, step="hostname", tz="Europe/Budapest")
@@ -294,7 +294,7 @@ def scenario_install():
         m = vm.wait_for(r"EXEC85_READY uptime=([\d.]+)", 5)
         result.update(installed_kernel_uptime_at_login_s=float(m[1]) if m else None, installed_host_seconds_to_login=round(time.time() - vm.t0, 2))
         d = vm.wait_line(L, lambda d: True, 10)
-        step("installed: login shows the chosen settings", d is not None and d["host"] == "lab85" and d["layout"] == "hu" and d["theme"] == "light" and d["user"] == "tester" and d["field"] == "password", str(d))
+        step("installed: login shows the chosen settings", d is not None and d["host"] == "lab85" and d["layout"] == "uk" and d["theme"] == "light" and d["user"] == "tester" and d["field"] == "password", str(d))
         shot = vm.screenshot("l1-login")
         step("installed: login screen in the chosen (light) theme", bar_pixel(shot) == LIGHT["bar"] and window_pixel(shot) == LIGHT["bg"])
         mm = vm.wait_for(r"EXEC85_MEM total_kb=(\d+) used_kb=(\d+) exec85_rss_kb=(\d+)", 120)
