@@ -274,7 +274,14 @@ fn report_loop() {
                 let uid = account::users(ctx.root).into_iter().find(|u| u.name == d.user).map(|u| u.uid);
                 let pid = find_supervised_pid(Path::new("/proc"), &d.init_name()).or_else(|| find_pid(Path::new("/proc"), &d, uid)).map_or("-".to_string(), |p| p.to_string());
                 let line = format!("EXEC85_SVC name={n} status={st} pid={pid}");
-                if last.get(&n) != Some(&line) { crate::supervisor::console_line(&line); last.insert(n, line); }
+                if last.get(&n) != Some(&line) { crate::supervisor::console_line(&line); last.insert(n.clone(), line); }
+                // A service that is "running" but has no process of its own is probably failing to start: show why.
+                if pid == "-" && st == "running" {
+                    let log = tail(&Path::new("/").join(d.log_path().trim_start_matches('/')), 3).replace('\n', " / ").replace(' ', "_");
+                    let key = format!("{n}:log");
+                    let line = format!("EXEC85_SVCLOG name={n} text={}", if log.is_empty() { "(empty)".to_string() } else { log.chars().take(300).collect() });
+                    if last.get(&key) != Some(&line) { crate::supervisor::console_line(&line); last.insert(key, line); }
+                }
             }
         }
         std::thread::sleep(Duration::from_secs(2));
