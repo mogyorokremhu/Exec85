@@ -10,11 +10,17 @@ CMDLINE=${KERNEL_CMDLINE:-"console=tty0 console=ttyS0,115200 rdinit=/sbin/init"}
 
 echo "==> installing build tools"
 apk add --no-cache rust cargo build-base xorriso kmod cpio gzip >/dev/null
-# Alpine splits Limine into several packages; install every part (not docs) and show what we got.
-LIMINE_PKGS=$(apk search -q 'limine*' | grep -v -e -doc -e -dev -e -bash -e -zsh -e -fish -e -pyc | tr '\n' ' ')
-echo "limine packages: $LIMINE_PKGS"
-apk add --no-cache $LIMINE_PKGS >/dev/null
-for p in $LIMINE_PKGS; do apk info -L "$p" 2>/dev/null | grep -i -e limine -e BOOTX64 | head -20; done
+# Limine bootloader: try the stable repos first, then Alpine's edge repos.
+apk update >/dev/null
+echo "limine in stable repos: $(apk search -q 'limine*' | tr '\n' ' ')"
+if ! apk search -q limine | grep -qx limine; then
+    EDGE=https://dl-cdn.alpinelinux.org/alpine/edge
+    apk add --no-cache -X $EDGE/community -X $EDGE/testing --allow-untrusted limine >/dev/null || true
+else
+    apk add --no-cache limine >/dev/null
+fi
+for p in $(apk info | grep -i limine); do echo "--- files of $p"; apk info -L "$p" | grep -v -e doc -e man; done
+command -v limine >/dev/null || { echo "ERROR: limine not installed"; exit 1; }
 
 echo "==> building the Exec85 program (static)"
 cd "$SRC/ui"
@@ -59,7 +65,8 @@ rm -rf "${ISO:?}"; mkdir -p "$ISO/boot/limine" "$ISO/EFI/BOOT"
 cp "$W/vmlinuz" "$ISO/boot/vmlinuz"
 cp "$W/initramfs" "$ISO/boot/initramfs"
 sed "s|@CMDLINE@|$CMDLINE|" "$SRC/image/boot/limine.conf" > "$ISO/boot/limine/limine.conf"
-findone() { f=$(find /usr -name "$1" 2>/dev/null | head -n1); [ -n "$f" ] || { echo "missing $1"; exit 1; }; echo "$f"; }
+findone() { find /usr -name "$1" 2>/dev/null | head -n1; }
+for f in limine-bios.sys limine-bios-cd.bin limine-uefi-cd.bin BOOTX64.EFI; do [ -n "$(findone $f)" ] || { echo "ERROR: $f not found"; exit 1; }; done
 cp "$(findone limine-bios.sys)" "$(findone limine-bios-cd.bin)" "$(findone limine-uefi-cd.bin)" "$ISO/boot/limine/"
 cp "$(findone BOOTX64.EFI)" "$ISO/EFI/BOOT/"
 mkdir -p "$OUT"
