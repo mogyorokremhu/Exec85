@@ -26,6 +26,8 @@ if ! grep -qw exec85.live /proc/cmdline; then
   mount -o remount,rw / 2>/dev/null   # the initramfs mounts the installed root read-only; services and package installs need it writable
   mount -a 2>/dev/null
 fi
+# The loopback interface (127.0.0.1): programs on this computer talk to each other through it (a website and its client, a database ...).
+ip link set lo up 2>/dev/null
 # Network: bring up every wired interface and ask the router for an address (in the background, so boot is not delayed).
 modprobe -a e1000 e1000e r8169 virtio_net igb 2>/dev/null
 for n in /sys/class/net/*; do
