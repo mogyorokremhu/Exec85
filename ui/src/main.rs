@@ -23,6 +23,7 @@ mod login;
 mod paint;
 mod shell;
 mod supervisor;
+mod helper;
 mod services;
 mod sys;
 mod ui;
@@ -318,6 +319,8 @@ fn main() {
         Some("--installer") => stage_installer(),
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
+        Some("--helperd") => helper::serve(),
+        Some("--svc") | Some("--pkg") => std::process::exit(helper::cli(&args[1..])),
         None => supervisor::run(),
         Some(other) => { eprintln!("unknown option {other}; try --version"); std::process::exit(2); }
     }
