@@ -50,6 +50,12 @@ impl ServiceDef {
 /// Quote for a POSIX shell: everything between single quotes.
 pub fn sh_quote(s: &str) -> String { format!("'{}'", s.replace('\'', "'\\''")) }
 
+/// A word that needs no quoting at all stays as it is. (OpenRC passes `command_args` on as plain words, so quotes
+/// we add are only a safeguard for awkward characters, never needed for ordinary arguments such as `-Xmx2G` or `100000`.)
+pub fn sh_word(w: &str) -> String {
+    if !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || "_./:=@%+,-".contains(c)) { w.to_string() } else { sh_quote(w) }
+}
+
 /// Split a command line into words the way a shell would for simple cases (quotes and backslashes).
 pub fn split_command(s: &str) -> Result<Vec<String>, String> {
     let (mut out, mut cur, mut have) = (Vec::new(), String::new(), false);
@@ -82,8 +88,8 @@ pub fn render_script(d: &ServiceDef) -> Result<String, String> {
     let _ = writeln!(s, "description={}", sh_quote(if d.description.is_empty() { &d.name } else { &d.description }));
     s.push_str("supervisor=supervise-daemon\n");
     let _ = writeln!(s, "command={}", sh_quote(&words[0]));
-    let args: Vec<String> = words[1..].iter().map(|w| sh_quote(w)).collect();
-    let _ = writeln!(s, "command_args={}", sh_quote(&args.join(" ")).replace("'\\''", "'\\''"));
+    let args: Vec<String> = words[1..].iter().map(|w| sh_word(w)).collect();
+    let _ = writeln!(s, "command_args={}", sh_quote(&args.join(" ")));
     let _ = writeln!(s, "command_user={}", sh_quote(&d.user));
     if !d.dir.is_empty() { let _ = writeln!(s, "directory={}", sh_quote(&d.dir)); }
     let _ = writeln!(s, "output_log={}", sh_quote(&d.log_path()));
@@ -173,7 +179,7 @@ mod tests {
                      "respawn_max=0", "output_log='/var/log/exec85/mc.log'", "export JAVA_OPTS='-Dx=1'", "use net"] {
             assert!(s.contains(want), "missing {want} in:\n{s}");
         }
-        assert!(s.contains("command_args=") && s.contains("-Xmx2G") && s.contains("nogui"));
+        assert!(s.contains("command_args='-Xmx2G -jar server.jar nogui'"), "ordinary arguments carry no quotes of their own:\n{s}");
     }
 
     #[test]

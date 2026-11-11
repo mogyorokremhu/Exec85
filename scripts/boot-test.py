@@ -333,7 +333,7 @@ def scenario_install():
         terminal_run(vm, "exec85 --svc start ticker; echo TK=$?", "TK=0", 90, "installed: the service starts")
         d = svc_line(vm, "ticker", lambda d: d["status"] == "running" and d["pid"] != "-", 60)
         if d is None:   # diagnostics for the log: what is really running?
-            for i, cmd in enumerate(["ps | grep supervise | grep -v grep | cut -c1-66; echo DIAG$((0+1))", "ps | grep 100000 | grep -v grep | cut -c1-66; echo DIAG$((0+2))", "ps | grep -c sleep; echo DIAG$((0+3))"], 1):
+            for i, cmd in enumerate(["ps | grep supervise | grep -v grep | cut -c1-66; echo DIAG$((0+1))", "exec85 --svc log ticker | tail -1 | cut -c1-66; echo DIAG$((0+2))", "ps | grep -c sleep; echo DIAG$((0+3))"], 1):
                 try: terminal_run(vm, cmd, f"DIAG{i}", 20, "diagnostic")
                 except AssertionError: pass
                 print("DIAG>", app_line(vm, "terminal", 1), flush=True)
