@@ -38,11 +38,16 @@ def log_text():
     try: return open(serial_log, errors="replace").read()
     except FileNotFoundError: return ""
 
+STATE_KEYS = ("dir", "index", "name", "count", "drive", "focus", "menu", "item", "dialog", "theme", "sort", "hidden", "layout", "details")
+
 def states():
+    """Every complete EXEC85_STATE line so far. A line that a kernel message cut in half is ignored."""
     out = []
     for line in log_text().splitlines():
         if "EXEC85_STATE " in line:
-            out.append(dict(kv.split("=", 1) for kv in line.split("EXEC85_STATE ", 1)[1].split() if "=" in kv))
+            d = dict(kv.split("=", 1) for kv in line.split("EXEC85_STATE ", 1)[1].split() if "=" in kv)
+            if all(k in d for k in STATE_KEYS) and d["details"] in ("true", "false"):
+                out.append(d)
     return out
 
 def wait_for(pattern, timeout):
@@ -117,16 +122,19 @@ def press(keyname, **expect):
 
 failure = None
 try:
-    m = wait_for(r"EXEC85_READY uptime=([\d.]+) display=(\w+) (\d+)x(\d+)", 120 if not SLOW else 600)
+    m = wait_for(r"EXEC85_READY uptime=([\d.]+)", 120 if not SLOW else 600)
     step("first screen drawn", m is not None, "no EXEC85_READY on serial")
     ready_wall = time.time() - t0
-    result.update(booted=True, kernel_uptime_at_ready_s=float(m[1]), display_driver=m[2], host_seconds_to_ready=round(ready_wall, 2), screen=f"{m[3]}x{m[4]}")
+    result.update(booted=True, kernel_uptime_at_ready_s=float(m[1]), host_seconds_to_ready=round(ready_wall, 2))
+    d = wait_for(r"EXEC85_DISPLAY (\w+) (\d+)x(\d+)", 10)
+    if d: result.update(display_driver=d[1], screen=f"{d[2]}x{d[3]}")
     mm = wait_for(r"EXEC85_MEM total_kb=(\d+) used_kb=(\d+) exec85_rss_kb=(\d+)", 120)
     step("idle memory report", mm is not None, "no EXEC85_MEM")
     result.update(mem_total_kb=int(mm[1]), mem_used_kb=int(mm[2]), exec85_rss_kb=int(mm[3]))
 
-    s = states()
-    step("shell reports initial state", bool(s) and s[-1].get("dir") == "/" and s[-1].get("focus") == "files" and s[-1].get("theme") == "dark", str(s[-1:] ))
+    # Establish a known baseline with two real key presses (does not depend on the very first state line).
+    press("tab", focus="details", dir="/", theme="dark", menu="none", dialog="none")
+    press("shift-tab", focus="files")
     step("dark theme on screen", bar_pixel(screenshot("1-files-dark")) == DARK_BAR)
 
     # --- file list: type-ahead, open folder, arrows, parent ---

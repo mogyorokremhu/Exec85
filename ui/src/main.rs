@@ -20,9 +20,11 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::{thread, time::Duration};
 
 /// Write a line to the system console (the serial port in our tests) and stdout.
+/// The whole line goes out in ONE write so kernel messages are much less likely to land in the middle of it.
 fn log(line: &str) {
-    println!("{line}");
-    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open("/dev/console") { let _ = writeln!(f, "{line}"); }
+    let msg = format!("{line}\n");
+    print!("{msg}");
+    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open("/dev/console") { let _ = f.write_all(msg.as_bytes()); }
 }
 
 fn uptime() -> f64 {
@@ -100,7 +102,8 @@ fn main() {
 
     ui::draw(&app, &mut canvas, &m);
     display.present(&canvas);
-    log(&format!("EXEC85_READY uptime={:.2} display={} {}x{}", uptime(), display.kind, display.width, display.height));
+    log(&format!("EXEC85_READY uptime={:.2}", uptime()));
+    log(&format!("EXEC85_DISPLAY {} {}x{}", display.kind, display.width, display.height));
     log(&app.state_line());
 
     // Idle memory report, 15 seconds after the first screen (MemTotal - MemAvailable).
