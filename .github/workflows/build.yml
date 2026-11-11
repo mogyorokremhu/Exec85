@@ -1,7 +1,9 @@
 name: build-and-boot-test
 on:
   push:
+    branches: ['**']      # branches only; version tags are handled by release.yml
   workflow_dispatch:
+  workflow_call:          # lets release.yml reuse this whole pipeline
 
 jobs:
   unit-tests:
