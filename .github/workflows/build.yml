@@ -12,6 +12,7 @@ jobs:
 
   build-iso:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Build ISO inside Alpine
@@ -28,6 +29,7 @@ jobs:
   boot-test:
     needs: build-iso
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -38,8 +40,9 @@ jobs:
         with: { name: exec85-iso, path: out }
       - name: Install QEMU
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 ovmf
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+          sudo -E apt-get update
+          sudo -E apt-get install -y --no-install-recommends qemu-system-x86 ovmf
           sudo chmod 666 /dev/kvm || true
           ls -l /dev/kvm || echo "no KVM on this runner: using software emulation (TCG)"
       - name: Boot in QEMU (${{ matrix.firmware }})
