@@ -17,5 +17,10 @@ mdev -s
 find /sys -name modalias -type f -print0 2>/dev/null | xargs -0 cat 2>/dev/null | sort -u | xargs modprobe -b -a 2>/dev/null
 # Input drivers explicitly too (harmless if built in or already loaded).
 modprobe -a evdev i8042 atkbd hid_generic usbhid 2>/dev/null
+# Disk drivers explicitly. The disks themselves only appear AFTER their controller driver has loaded,
+# so the one-pass scan above cannot find the drivers for them (sd_mod for SATA/USB disks, and so on).
+modprobe -a sd_mod sr_mod ahci ata_piix ata_generic nvme virtio_blk virtio_scsi usb_storage uas 2>/dev/null
 mdev -s
+# Installed systems: mount /boot (and anything else) from /etc/fstab. The live disc has no fstab.
+grep -qw exec85.live /proc/cmdline || mount -a 2>/dev/null
 exit 0

@@ -8,6 +8,10 @@ use std::path::Path;
 
 extern "C" {
     pub fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
+    pub fn setgroups(n: usize, list: *const u32) -> c_int;
+    pub fn setgid(gid: u32) -> c_int;
+    fn getuid() -> u32;
+    pub fn setuid(uid: u32) -> c_int;
     pub fn statvfs(path: *const c_char, buf: *mut c_void) -> c_int;
     pub fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
 }
@@ -40,4 +44,10 @@ pub fn disk_space(path: &Path) -> Option<(u64, u64)> {
     let r = unsafe { statvfs(c.as_ptr(), buf.as_mut_ptr() as *mut c_void) };
     if r != 0 { return None; }
     Some((buf[2].saturating_mul(buf[1]), buf[4].saturating_mul(buf[1])))
+}
+
+/// The user id this process runs as (0 = root).
+pub fn uid() -> u32 {
+    // SAFETY: getuid has no failure modes and touches no memory.
+    unsafe { getuid() }
 }

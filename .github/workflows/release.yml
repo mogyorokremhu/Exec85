@@ -21,6 +21,7 @@ jobs:
     needs: ci
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { name: exec85-iso, path: out }
       - name: Publish release
@@ -32,23 +33,14 @@ jobs:
           mv exec85.iso "exec85-${TAG}.iso"
           sha256sum "exec85-${TAG}.iso" > SHA256SUMS
           cat sizes.txt SHA256SUMS
-          cat > notes.md <<NOTES
-          **Early alpha. This is a boot test image, not an installable OS yet.**
-
-          It boots (BIOS and UEFI) to a blank Exec85 screen. There is no installer,
-          login, file browser or apps yet; those come in later milestones.
-
-          ### Try it in QEMU
-          \`\`\`
-          qemu-system-x86_64 -m 512 -smp 2 -cdrom exec85-${TAG}.iso -boot d -vga std
-          \`\`\`
-          Add \`-accel tcg\` if hardware virtualization is off, or \`-accel whpx\` / \`-accel kvm\` if it is on.
-          Check the download with \`sha256sum -c SHA256SUMS\`.
-
-          The ISO was boot-tested in QEMU (BIOS and UEFI) by CI before this release was created.
-          Boot and memory numbers are in docs/MEASURING.md.
-          NOTES
-          sed -i 's/^          //' notes.md
+          # Release text comes from docs/releases/<tag>.md when that file exists (written by a person);
+          # otherwise a short generic text.
+          if [ -f "$GITHUB_WORKSPACE/docs/releases/${TAG}.md" ]; then
+            cp "$GITHUB_WORKSPACE/docs/releases/${TAG}.md" notes.md
+          else
+            printf '%s\n' "**Early alpha release ${TAG}.** See the repository README and docs/ for what works." \
+              "Check the download with \`sha256sum -c SHA256SUMS\`." > notes.md
+          fi
           gh release create "$TAG" "exec85-${TAG}.iso" SHA256SUMS \
             --repo "${{ github.repository }}" --title "Exec85 ${TAG} (alpha)" \
             --target "${{ github.sha }}" --prerelease --notes-file notes.md

@@ -66,6 +66,14 @@ pub fn fmt_size(n: u64) -> String {
     if v < 10.0 { format!("{:.1}{}", v, U[i]) } else { format!("{:.0}{}", v, U[i]) }
 }
 
+/// Disk sizes the way drive makers label them (powers of 1000): a "4 TB" drive shows as 4.0TB.
+pub fn fmt_disk(n: u64) -> String {
+    const U: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
+    let (mut v, mut i) = (n as f64, 0);
+    while v >= 1000.0 && i < 4 { v /= 1000.0; i += 1; }
+    if i == 0 { format!("{n}B") } else if v < 10.0 { format!("{:.1}{}", v, U[i]) } else { format!("{:.0}{}", v, U[i]) }
+}
+
 /// Days since 1970-01-01 to (year, month, day). Public-domain algorithm by Howard Hinnant.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
@@ -171,6 +179,15 @@ mod tests {
         assert_eq!(fmt_size(1536), "1.5K");
         assert_eq!(fmt_size(10 * 1024 * 1024), "10M");
         assert_eq!(fmt_size(4 * 1024u64.pow(4)), "4.0T");
+    }
+
+    #[test]
+    fn disk_sizes_use_drive_maker_units() {
+        assert_eq!(fmt_disk(4_000_787_030_016), "4.0TB");
+        assert_eq!(fmt_disk(512_110_190_592), "512GB");
+        assert_eq!(fmt_disk(31_914_983_424), "32GB");
+        assert_eq!(fmt_disk(999), "999B");
+        assert_eq!(fmt_disk(1_000_204_886_016), "1.0TB");
     }
 
     #[test]
