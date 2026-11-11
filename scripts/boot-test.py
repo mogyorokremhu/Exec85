@@ -337,6 +337,7 @@ def scenario_install():
                 try: terminal_run(vm, cmd, f"DIAG{i}", 20, "diagnostic")
                 except AssertionError: pass
                 print("DIAG>", app_line(vm, "terminal", 1), flush=True)
+            print("DIAG svc lines>", [l for l in vm.text().splitlines() if "EXEC85_SVC" in l][-5:], flush=True)
         step("installed: the service is running", d is not None)
         press(vm, "f4")
         press(vm, "f10", menu="file")
