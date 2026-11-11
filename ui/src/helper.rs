@@ -214,7 +214,6 @@ fn serve_one(mut s: UnixStream) {
 
 /// The process id of a running service: the process owned by the service's user whose command line is exactly the service's command.
 pub fn find_pid(proc_dir: &Path, d: &ServiceDef, uid: Option<u32>) -> Option<u32> {
-    use std::os::unix::fs::MetadataExt;
     let want = services::split_command(&d.command).ok()?;
     let mut best = None;
     for e in std::fs::read_dir(proc_dir).ok()?.flatten() {
@@ -224,7 +223,12 @@ pub fn find_pid(proc_dir: &Path, d: &ServiceDef, uid: Option<u32>) -> Option<u32
         // The program may be started by its full path (/bin/sleep) while the service says `sleep`: compare the file name.
         let base = |a: &str| a.rsplit('/').next().unwrap_or(a).to_string();
         if args.len() != want.len() || args.is_empty() || base(&args[0]) != base(&want[0]) || args[1..] != want[1..] { continue; }
-        if let (Some(u), Ok(m)) = (uid, std::fs::metadata(e.path())) { if m.uid() != u { continue; } }
+        // The owner is read from the status file: after a program drops root rights, the /proc/<pid> folder itself stays owned by root.
+        if let Some(u) = uid {
+            let status = std::fs::read_to_string(e.path().join("status")).unwrap_or_default();
+            let owner = status.lines().find_map(|l| l.strip_prefix("Uid:")).and_then(|r| r.split_whitespace().next()).and_then(|v| v.parse::<u32>().ok());
+            if owner != Some(u) { continue; }
+        }
         best = Some(best.map_or(pid, |b: u32| b.min(pid)));
     }
     best
