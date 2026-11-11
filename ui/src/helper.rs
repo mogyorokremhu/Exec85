@@ -221,7 +221,9 @@ pub fn find_pid(proc_dir: &Path, d: &ServiceDef, uid: Option<u32>) -> Option<u32
         let Some(pid) = e.file_name().to_string_lossy().parse::<u32>().ok() else { continue };
         let Ok(raw) = std::fs::read(e.path().join("cmdline")) else { continue };
         let args: Vec<String> = raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-        if args != want { continue; }
+        // The program may be started by its full path (/bin/sleep) while the service says `sleep`: compare the file name.
+        let base = |a: &str| a.rsplit('/').next().unwrap_or(a).to_string();
+        if args.len() != want.len() || args.is_empty() || base(&args[0]) != base(&want[0]) || args[1..] != want[1..] { continue; }
         if let (Some(u), Ok(m)) = (uid, std::fs::metadata(e.path())) { if m.uid() != u { continue; } }
         best = Some(best.map_or(pid, |b: u32| b.min(pid)));
     }
@@ -400,6 +402,8 @@ mod tests {
         assert_eq!(find_pid(Path::new("/proc"), &d, None), Some(child.id()));
         assert_eq!(find_pid(Path::new("/proc"), &d, Some(crate::sys::uid())), Some(child.id()));
         assert_eq!(find_pid(Path::new("/proc"), &d, Some(crate::sys::uid().wrapping_add(7))), None, "another user's process does not count");
+        let by_path = ServiceDef { command: "/bin/sleep 1234".into(), ..d.clone() };
+        assert_eq!(find_pid(Path::new("/proc"), &by_path, None), Some(child.id()), "the program's file name is what counts");
         let other = ServiceDef { command: "sleep 4321".into(), ..d.clone() };
         assert_eq!(find_pid(Path::new("/proc"), &other, None), None);
         child.kill().unwrap(); child.wait().unwrap();
