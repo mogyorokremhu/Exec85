@@ -378,7 +378,7 @@ def scenario_testing():
         d = vm.lines(I)[-1]
         step("testing: the Skip choice is offered and selected", d["sel"].startswith("Skip_installation"), d["sel"])
         press(vm, "ret", I, step="confirm")
-        press(vm, "ret", I, step="installing")
+        vm.monitor("sendkey ret")   # the in-memory set-up is so fast that the 'installing' state can go by unseen
         r = vm.wait_for(r"EXEC85_INSTALL result=(ok|failed)", 60)
         step("testing: set-up in memory finished", r is not None and r[1] == "ok")
         d = vm.wait_line(I, lambda d: d["step"] == "done" and d["result"] == "ok", STEP_TIMEOUT)
