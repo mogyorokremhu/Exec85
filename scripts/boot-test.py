@@ -538,17 +538,22 @@ def scenario_testing():
         step("software app lists installed programs", int(d.get("installed", "0")) > 5, str(d))
         press(vm, "f4")
         open_app(vm, 1)
-        type_text(vm, "exec85 --pkg add openjdk21-jre-headless; echo JPKG=$?"); vm.monitor("sendkey ret")
+        type_text(vm, "exec85 --pkg add openjdk21-jre-headless > /tmp/j.txt 2>&1; echo JPKG=$?"); vm.monitor("sendkey ret")
         end = time.time() + 900; d = {}
         while time.time() < end:
             time.sleep(1)
             d = app_line(vm, "terminal", 1) or {}
             if re.search(r"JPKG=\d", d.get("l1", "") + d.get("l2", "") + d.get("l3", "")): break
         print("JAVA install ended after", round(time.time() - (end - 900)), "s:", d, flush=True)
-        for cmd, mark in [("df -m / | tail -1; echo DG1", "DG1"), ("free -m | head -2 | tail -1; echo DG2", "DG2"), ("ls /usr/lib/jvm; echo DG3", "DG3"), ("java -version 2>&1 | head -1; echo DG4", "DG4")]:
-            try: terminal_run(vm, cmd, mark, 30, "diagnostic")
-            except AssertionError: pass
-            print("DIAG>", app_line(vm, "terminal", 1), flush=True)
+        if "JPKG=0" not in (d.get("l1", "") + d.get("l2", "") + d.get("l3", "")):
+            for i in range(1, 9):
+                try: terminal_run(vm, f"sed -n {i}p /tmp/j.txt | cut -c1-66; echo DG{i}", f"DG{i}", 20, "diagnostic")
+                except AssertionError: pass
+                print("DIAG>", i, (app_line(vm, "terminal", 1) or {}).get("l1"), flush=True)
+            for cmd, mark in [("wc -l /tmp/j.txt; echo DG9", "DG9"), ("tail -2 /tmp/j.txt | head -1 | cut -c1-66; echo DG10", "DG10"), ("ls /usr/lib/jvm; echo DG11", "DG11")]:
+                try: terminal_run(vm, cmd, mark, 20, "diagnostic")
+                except AssertionError: pass
+                print("DIAG>", (app_line(vm, "terminal", 1) or {}).get("l1"), flush=True)
         step("software: Java installed with apk", re.search(r"JPKG=0", d.get("l1", "") + d.get("l2", "") + d.get("l3", "")) is not None, str(d))
         terminal_run(vm, "java -version 2>&1 | head -1; echo JAVA=$?", "JAVA=0", 120, "software: Java runs")
     finally:
