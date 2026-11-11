@@ -546,11 +546,11 @@ def scenario_testing():
             if re.search(r"JPKG=\d", d.get("l1", "") + d.get("l2", "") + d.get("l3", "")): break
         print("JAVA install ended after", round(time.time() - (end - 900)), "s:", d, flush=True)
         if "JPKG=0" not in (d.get("l1", "") + d.get("l2", "") + d.get("l3", "")):
-            for i in range(1, 9):
+            for i in list(range(9, 19)):
                 try: terminal_run(vm, f"sed -n {i}p /tmp/j.txt | cut -c1-66; echo DG{i}", f"DG{i}", 20, "diagnostic")
                 except AssertionError: pass
                 print("DIAG>", i, (app_line(vm, "terminal", 1) or {}).get("l1"), flush=True)
-            for cmd, mark in [("wc -l /tmp/j.txt; echo DG9", "DG9"), ("tail -2 /tmp/j.txt | head -1 | cut -c1-66; echo DG10", "DG10"), ("ls /usr/lib/jvm; echo DG11", "DG11")]:
+            for cmd, mark in [("wc -l /tmp/j.txt; echo DG9", "DG9"), ("tail -2 /tmp/j.txt | head -1 | cut -c1-66; echo DG10", "DG10"), ("df -m / | tail -1 | tr -s ' ' '_'; echo DG21", "DG21"), ("grep MemTotal /proc/meminfo; echo DG22", "DG22"), ("mount | grep ' / ' | cut -c1-66; echo DG23", "DG23")]:
                 try: terminal_run(vm, cmd, mark, 20, "diagnostic")
                 except AssertionError: pass
                 print("DIAG>", (app_line(vm, "terminal", 1) or {}).get("l1"), flush=True)
