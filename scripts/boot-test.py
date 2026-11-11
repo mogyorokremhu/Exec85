@@ -365,7 +365,7 @@ def scenario_install():
 APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software"]
 
 SHIFTED = {"_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
-PLAIN = {" ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}
+PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}
 
 KEYBOARD = {"layout": "us"}   # the layout the system under test is using
 UK_SHIFTED = {"|": "shift-less", '"': "shift-2"}   # the UK keyboard puts these elsewhere than the US one
@@ -515,7 +515,7 @@ def scenario_testing():
         terminal_run(vm, "exec85 --svc add nginx --user root -- nginx -g 'daemon off;'; exec85 --svc start nginx; echo NG=$?", "NG=0", 60, "services: nginx defined and started")
         d = svc_line(vm, "nginx", lambda d: d["status"] == "running", 60)
         step("services: nginx is running", d is not None)
-        terminal_run(vm, "wget -S -O /dev/null http://127.0.0.1/ 2>&1 | head -1", "HTTP/1.1", 60, "services: nginx answers")
+        terminal_run(vm, "wget -S -O /dev/null http://127.0.0.1/ 2>&1 | grep -o 'HTTP/1.[1] [0-9]*'", "HTTP/1.1 ", 60, "services: nginx answers")
         terminal_run(vm, "exec85 --svc stop web; exec85 --svc remove web; echo GONE=$?", "GONE=0", 60, "services: a service is stopped and removed")
         d = svc_line(vm, "web", lambda d: d["status"] != "running", 30, after=0)
         press(vm, "f4")
