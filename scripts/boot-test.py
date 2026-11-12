@@ -531,6 +531,7 @@ def scenario_testing():
         vm.monitor("device_del usbdev")
         step("usb: pulling the stick out afterwards is noticed", vm.wait_for(r"EXEC85_USB removed mount=", 60) is not None)
         time.sleep(3)
+        vm.monitor(f"drive_add 0 if=none,id=usbd,file={usb},format=raw")   # unplugging the stick also released its virtual disk
         reply = vm.monitor("device_add usb-storage,drive=usbd,id=usbdev2,bus=xhci.0")
         print("device_add reply:", repr(re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", reply)[-300:]), flush=True)
         if vm.wait_for(r"EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB mount=\S+(?s:.*)EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB", 40) is None:
