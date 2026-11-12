@@ -5,7 +5,7 @@ use crate::fs::{self as xfs, fmt_size, fmt_time, Drive, Sort};
 use std::io::Write;
 use std::path::Path;
 
-pub const COMMANDS: [(&str, &str); 7] = [
+pub const COMMANDS: [(&str, &str); 8] = [
     ("help", "this list"),
     ("dir", "list a folder with sizes and dates"),
     ("disk", "how full each drive is"),
@@ -13,6 +13,7 @@ pub const COMMANDS: [(&str, &str); 7] = [
     ("get", "download a file from the web"),
     ("svc", "services: svc list | add | start | stop | log"),
     ("pkg", "software: pkg search | add | del | update"),
+    ("mc", "Minecraft server: mc versions | mc create NAME VERSION 2|4|8 --eula"),
 ];
 
 const BOLD: &str = "\x1b[1m";

@@ -155,6 +155,12 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
             let mounts = std::fs::read_to_string(ctx.root.join("proc/mounts")).unwrap_or_default();
             crate::usb::eject(ctx.runner, &mounts, &ctx.root.join("run/exec85"), &ctx.root.join("media"), arg(1)?)
         }
+        "mc-versions" => crate::mc::versions(ctx),
+        "mc-create" => {
+            let (name, version, ram, eula, user) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?);
+            let ram_gb: u32 = ram.parse().map_err(|_| "RAM must be 2, 4 or 8.".to_string())?;
+            crate::mc::create(ctx, &crate::mc::Create { name, version, ram_gb, eula: eula == "1", user })
+        }
         "apk-installed" => { let (_c, out) = ctx.runner.run("apk", &["info", "-v"]); Ok(cap(out)) }
         "apk-update" => { let (c, out) = ctx.runner.run("apk", &["update"]); if c == 0 { Ok(cap(out)) } else { Err(cap(out)) } }
         "apk-upgrade" => { let (c, out) = ctx.runner.run("apk", &["upgrade", "--no-progress"]); if c == 0 { Ok(cap(out)) } else { Err(cap(out)) } }
@@ -355,12 +361,18 @@ pub fn cli(args: &[String]) -> i32 {
         ["--svc", a @ ("start" | "stop" | "restart" | "status" | "get"), name] => show(call(&[&format!("svc-{a}"), name])),
         ["--svc", "remove", name] => show(call(&["svc-remove", name])),
         ["--svc", "log", name] => show(call(&["svc-log", name, "40"])),
+        ["--mc", "versions"] => show(call(&["mc-versions"])),
+        ["--mc", "create", name, version, ram, rest @ ..] => {
+            let eula = rest.contains(&"--eula");
+            let user = rest.iter().position(|a| *a == "--user").and_then(|i| rest.get(i + 1).copied()).map(String::from).unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+            show(call(&["mc-create", name, version, ram, if eula { "1" } else { "0" }, &user]))
+        }
         ["--usb", "eject", mount] => show(call(&["usb-eject", mount])),
         ["--pkg", a @ ("add" | "del"), pkgs @ ..] if !pkgs.is_empty() => { let mut v = vec![format!("apk-{a}")]; v.extend(pkgs.iter().map(|p| p.to_string())); let r: Vec<&str> = v.iter().map(String::as_str).collect(); show(call(&r)) }
         ["--pkg", "search", q] => show(call(&["apk-search", q])),
         ["--pkg", "update"] => show(call(&["apk-update"])),
         ["--pkg", "list"] => show(call(&["apk-installed"])),
-        _ => { eprintln!("usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --usb eject MOUNTPOINT"); 2 }
+        _ => { eprintln!("usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions | create NAME VERSION 2|4|8 [--eula] [--user U]"); 2 }
     }
 }
 
