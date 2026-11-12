@@ -62,6 +62,7 @@ pub const MENUS: [MenuDef; 5] = [
         it("Clock and calendar", "", Act::OpenApp(Kind::Clock)), it("Calculator", "", Act::OpenApp(Kind::Calculator)),
         it("Reversi", "", Act::OpenApp(Kind::Reversi)), it("Snake", "", Act::OpenApp(Kind::Snake)),
         it("Services", "", Act::OpenApp(Kind::Services)), it("Software", "", Act::OpenApp(Kind::Software)),
+        it("Minecraft server", "", Act::OpenApp(Kind::Minecraft)),
     ]},
     MenuDef { title: "Window", hot: 'w', items: &[
         it("Next window", "F6", Act::NextWindow), it("Close window", "F4", Act::CloseWindow), it("", "", Act::Sep),

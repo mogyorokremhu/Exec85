@@ -9,6 +9,7 @@ use crate::paint::Painter;
 pub mod calculator;
 pub mod clock;
 pub mod diskusage;
+pub mod minecraft;
 pub mod monitor;
 pub mod network;
 pub mod notepad;
@@ -24,14 +25,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software }
+pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft }
 
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Kind::Notepad => "notepad", Kind::Terminal => "terminal", Kind::Paint => "paint", Kind::Monitor => "monitor",
             Kind::DiskUsage => "diskusage", Kind::Network => "network", Kind::Clock => "clock",
-            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software",
+            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft",
         }
     }
 }
@@ -90,6 +91,7 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Notepad => Box::new(notepad::Notepad::new(env)),
         Kind::Paint => Box::new(paint::Paint::new(env)),
         Kind::Monitor => Box::new(monitor::Monitor::new()),
+        Kind::Minecraft => Box::new(minecraft::Minecraft::new(helper_backend(), minecraft::Minecraft::system_memory_kb())),
         Kind::Services => Box::new(services::Services::new(helper_backend())),
         Kind::Software => Box::new(software::Software::new(helper_backend())),
         Kind::Network => Box::new(network::Network::new()),

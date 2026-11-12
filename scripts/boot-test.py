@@ -611,6 +611,15 @@ def scenario_testing():
                 print("DIAG>", (app_line(vm, "terminal", 1) or {}).get("l1"), flush=True)
         step("software: Java installed with apk", re.search(r"JPKG=0", d.get("l1", "") + d.get("l2", "") + d.get("l3", "")) is not None, str(d))
         terminal_run(vm, "java -version 2>&1 | head -1; echo JAVA=$?", "JAVA=0", 120, "software: Java runs")
+
+        # ---- the Minecraft helper: real download from Mojang, checksum, Java, EULA ----
+        terminal_run(vm, "mc versions | head -1", "latest_1.", 120, "minecraft: the version list comes from Mojang")
+        terminal_run(vm, "mc create craft2 $(mc versions | head -1 | cut -d' ' -f2) 2; echo M2=$((5-3))", "M2=2", 600, "minecraft: installing without the EULA tick works")
+        terminal_run(vm, "tail -1 /srv/minecraft/craft2/eula.txt", "eula=false", 30, "minecraft: the EULA stays unaccepted unless you tick it")
+        terminal_run(vm, "mc create craft $(mc versions | head -1 | cut -d' ' -f2) 2 --eula; echo M3=$((5-3))", "M3=2", 600, "minecraft: installing with the EULA tick works")
+        d = svc_line(vm, "craft", lambda d: d["status"] == "running" and d["pid"] != "-", 120)
+        step("minecraft: the server is running as a service", d is not None)
+        terminal_run(vm, "svc log craft | grep -o 'minecraft server version [0-9.]*'", "re:minecraft_server_version_\\d", 120, "minecraft: the server program starts (Java and the downloaded jar work)")
     finally:
         vm.stop()
 
