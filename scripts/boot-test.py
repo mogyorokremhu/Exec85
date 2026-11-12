@@ -628,6 +628,10 @@ def scenario_testing():
             raise
         terminal_run(vm, "mc create craft $(mc versions | head -1 | cut -d' ' -f2) 2 --eula > /tmp/m3.txt 2>&1; echo M3=$((5-3))", "M3=2", 900, "minecraft: the install-with-EULA command finishes")
         d = svc_line(vm, "craft", lambda d: d["status"] == "running" and d["pid"] != "-", 120)
+        if d is None:
+            dump_file(vm, "/tmp/m3.txt", 5)
+            terminal_run(vm, "svc log craft | tail -3 | cut -c1-66; echo LG$((5-3))", "LG2", 20, "diagnostic")
+            print("LOG>", app_line(vm, "terminal", 1), flush=True)
         step("minecraft: the server is running as a service", d is not None)
         terminal_run(vm, "svc log craft | grep -o 'minecraft server version [0-9.]*'", "re:minecraft_server_version_\\d", 120, "minecraft: the server program starts (Java and the downloaded jar work)")
     finally:

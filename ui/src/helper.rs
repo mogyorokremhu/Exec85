@@ -286,8 +286,9 @@ fn report_loop() {
                 let recorded = std::fs::read_to_string(format!("/run/openrc/options/{}/child_pid", d.init_name())).ok().and_then(|v| v.trim().parse::<u32>().ok()).filter(|p| Path::new(&format!("/proc/{p}")).exists());
                 let pid = recorded.or_else(|| find_supervised_pid(Path::new("/proc"), &d.init_name())).or_else(|| find_pid(Path::new("/proc"), &d, uid)).map_or("-".to_string(), |p| p.to_string());
                 let up = std::fs::read_to_string("/proc/uptime").ok().and_then(|u| u.split_whitespace().next().map(|v| v.split('.').next().unwrap_or("0").to_string())).unwrap_or_default();
-                let line = format!("EXEC85_SVC name={n} status={st} pid={pid} up={up}");
-                if last.get(&n) != Some(&line) { crate::supervisor::console_line(&line); last.insert(n.clone(), line); }
+                let line = format!("EXEC85_SVC name={n} status={st} pid={pid}");
+                // The uptime is only for people reading the console; a new line is printed when status or process change, not every two seconds.
+                if last.get(&n) != Some(&line) { crate::supervisor::console_line(&format!("{line} up={up}")); last.insert(n.clone(), line); }
                 // A service that is "running" but has no process of its own is probably failing to start: show why.
                 if pid == "-" && st == "running" {
                     let log = tail(&Path::new("/").join(d.log_path().trim_start_matches('/')), 3).replace('\n', " / ").replace(' ', "_");
