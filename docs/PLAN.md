@@ -315,10 +315,25 @@ Reversi, Snake. Built in that order of importance; the games stay tiny.
   websites behind nginx or Caddy. Test: kill each process and confirm it comes
   back; reboot with nobody logged in and confirm they are up.
 
-### M6. Real hardware
-Test on the Christmas laptop: BIOS or UEFI, drivers, Wi-Fi, 4 TB GPT disk,
-lid-close behaviour, real boot time and idle RAM numbers. Fix the issues
-found. Collect a hardware compatibility list.
+### M6. Real hardware and everyday features
+Features (built and tested in QEMU first, in this order):
+1. **Pendrives.** Detect a USB drive when it is plugged in, show it in the Explorer's drive row, mount it,
+   and support copy, cut, delete, rename and edit on it, plus a safe **Eject**. FAT32, exFAT and NTFS.
+   Cutting between the pendrive and the computer copies first and deletes the original only after the copy
+   succeeded. Never run anything from the drive automatically.
+2. **Our own terminal commands**, written in Rust inside the `exec85` program, next to the normal shell and
+   BusyBox (which stay, so scripts keep working): `help`, `dir`, `disk`, `top`, `about`, `get`, then more.
+   Tab completion and history in the shell.
+3. **Minecraft server helper** (a preset on top of the generic "download a file and run it as a service"
+   feature; nothing Minecraft-specific in the OS): choose the **version** from Mojang's list, choose **2, 4 or
+   8 GB** of RAM (only choices that fit the machine), install the right Java, and an **EULA tick box** (off by
+   default, with the link to the text) that writes `eula=true` only when ticked.
+4. **Sleep mode**: turns the screen off after a chosen time or from a menu item, wakes on any key, and keeps
+   all services running. (Real suspend, which stops everything, stays off by default.)
+
+Real hardware, on the Christmas laptop: BIOS or UEFI, drivers, Wi-Fi, 4 TB GPT disk, lid-close behaviour, real
+boot time and idle RAM numbers. Fix the issues found. Collect a hardware compatibility list. Also: the Debian
+comparison for boot time and idle RAM, and changing network settings from the Network app.
 
 ### M7. Public release
 Release workflow, signed checksums, install instructions (`docs/INSTALL.md`),
