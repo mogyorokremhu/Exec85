@@ -23,6 +23,7 @@ pub mod code {
     pub const F5: u16 = 63;
     pub const F6: u16 = 64;
     pub const F7: u16 = 65;
+    pub const F8: u16 = 66;
     pub const F10: u16 = 68;
     pub const HOME: u16 = 102;
     pub const UP: u16 = 103;

@@ -151,6 +151,23 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
             let (_c, out) = ctx.runner.run("apk", &["search", "-v", "--", q]);
             Ok(out.lines().take(200).collect::<Vec<_>>().join("\n"))
         }
+        "usb-eject" => {
+            let mounts = std::fs::read_to_string(ctx.root.join("proc/mounts")).unwrap_or_default();
+            crate::usb::eject(ctx.runner, &mounts, &ctx.root.join("run/exec85"), &ctx.root.join("media"), arg(1)?)
+        }
+        "screen-power" => {
+            // Switch the display off or on (the monitor goes to sleep). Programs and services keep running.
+            let level = match arg(1)? { "off" => "4", "on" => "0", _ => return Err("Use on or off.".into()) };
+            let path = ctx.root.join("sys/class/graphics/fb0/blank");
+            std::fs::write(&path, level).map_err(|e| format!("cannot switch the screen: {e}"))?;
+            Ok(String::new())
+        }
+        "mc-versions" => crate::mc::versions(ctx),
+        "mc-create" => {
+            let (name, version, ram, eula, user) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?);
+            let ram_gb: u32 = ram.parse().map_err(|_| "RAM must be 2, 4 or 8.".to_string())?;
+            crate::mc::create(ctx, &crate::mc::Create { name, version, ram_gb, eula: eula == "1", user })
+        }
         "apk-installed" => { let (_c, out) = ctx.runner.run("apk", &["info", "-v"]); Ok(cap(out)) }
         "apk-update" => { let (c, out) = ctx.runner.run("apk", &["update"]); if c == 0 { Ok(cap(out)) } else { Err(cap(out)) } }
         "apk-upgrade" => { let (c, out) = ctx.runner.run("apk", &["upgrade", "--no-progress"]); if c == 0 { Ok(cap(out)) } else { Err(cap(out)) } }
@@ -276,8 +293,9 @@ fn report_loop() {
                 let recorded = std::fs::read_to_string(format!("/run/openrc/options/{}/child_pid", d.init_name())).ok().and_then(|v| v.trim().parse::<u32>().ok()).filter(|p| Path::new(&format!("/proc/{p}")).exists());
                 let pid = recorded.or_else(|| find_supervised_pid(Path::new("/proc"), &d.init_name())).or_else(|| find_pid(Path::new("/proc"), &d, uid)).map_or("-".to_string(), |p| p.to_string());
                 let up = std::fs::read_to_string("/proc/uptime").ok().and_then(|u| u.split_whitespace().next().map(|v| v.split('.').next().unwrap_or("0").to_string())).unwrap_or_default();
-                let line = format!("EXEC85_SVC name={n} status={st} pid={pid} up={up}");
-                if last.get(&n) != Some(&line) { crate::supervisor::console_line(&line); last.insert(n.clone(), line); }
+                let line = format!("EXEC85_SVC name={n} status={st} pid={pid}");
+                // The uptime is only for people reading the console; a new line is printed when status or process change, not every two seconds.
+                if last.get(&n) != Some(&line) { crate::supervisor::console_line(&format!("{line} up={up}")); last.insert(n.clone(), line); }
                 // A service that is "running" but has no process of its own is probably failing to start: show why.
                 if pid == "-" && st == "running" {
                     let log = tail(&Path::new("/").join(d.log_path().trim_start_matches('/')), 3).replace('\n', " / ").replace(' ', "_");
@@ -291,13 +309,43 @@ fn report_loop() {
     }
 }
 
+/// Look for USB drives every two seconds: mount new ones under /media, unmount the ones that were pulled out.
+fn usb_watch() {
+    use crate::usb::{usb_partitions, Event, Manager};
+    let mut m = Manager::new(Path::new("/sys/block"), Path::new("/dev"), Path::new("/media"), Path::new(SOCK_DIR));
+    let r = SysRunner;
+    r.run("modprobe", &["-a", "vfat", "exfat", "ntfs3", "nls_cp437", "nls_utf8", "nls_iso8859-1"]);
+    loop {
+        let parts = usb_partitions(&m.sys_block);
+        if parts.iter().any(|p| !m.dev_dir.join(p).exists()) { r.run("mdev", &["-s"]); }
+        let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+        let mounted: std::collections::HashSet<String> = mounts.lines().filter_map(|l| l.split_whitespace().next()).filter_map(|d| d.strip_prefix("/dev/")).map(String::from).collect();
+        // Files on drives without owners (FAT, exFAT, NTFS) belong to the first regular user.
+        let (uid, gid) = account::regular_users(Path::new("/")).first().map_or((1000, 1000), |u| (u.uid, u.gid));
+        for e in m.scan(&r, &mounted, uid, gid) {
+            crate::supervisor::console_line(&match e {
+                Event::Added { dev, fs, label, mount } => format!("EXEC85_USB added dev={dev} fs={fs} label={} mount={mount}", if label.is_empty() { "-".to_string() } else { label.replace(' ', "_") }),
+                Event::Removed { mount } => format!("EXEC85_USB removed mount={mount}"),
+                Event::Error(e) => format!("EXEC85_USB error {}", e.replace(' ', "_")),
+            });
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+extern "C" { fn umask(mask: u32) -> u32; }
+
 pub fn serve() -> ! {
+    // Folders the helper creates (for Java, for servers) must be enterable by the users that run programs from them.
+    // SAFETY: umask only changes this process's default file permissions.
+    unsafe { umask(0o022); }
     let _ = std::fs::create_dir_all(SOCK_DIR);
     let _ = std::fs::remove_file(SOCK);
     let l = match UnixListener::bind(SOCK) { Ok(l) => l, Err(e) => { crate::supervisor::console_line(&format!("EXEC85_HELPER cannot listen: {e}")); std::process::exit(1) } };
     let _ = std::fs::set_permissions(SOCK, std::fs::Permissions::from_mode(0o666)); // everyone may connect; the peer check decides
     crate::supervisor::console_line("EXEC85_HELPER ready");
     std::thread::spawn(report_loop);
+    std::thread::spawn(usb_watch);
     for c in l.incoming().flatten() { std::thread::spawn(move || serve_one(c)); }
     std::process::exit(1)
 }
@@ -305,7 +353,11 @@ pub fn serve() -> ! {
 /// `exec85 --svc ...` and `exec85 --pkg ...`: the same actions as the apps, from a terminal.
 pub fn cli(args: &[String]) -> i32 {
     let sub: Vec<&str> = args.iter().map(String::as_str).collect();
-    let show = |r: Result<String, String>| match r { Ok(s) => { if !s.is_empty() { println!("{}", s.trim_end()); } 0 } Err(e) => { eprintln!("error: {e}"); 1 } };
+    // Output goes through write!, not println!: when the reader stops early (`... | head -1`) that is not an error worth crashing for.
+    let show = |r: Result<String, String>| match r {
+        Ok(s) => { if !s.is_empty() { let _ = writeln!(std::io::stdout(), "{}", s.trim_end()); } 0 }
+        Err(e) => { let _ = writeln!(std::io::stderr(), "error: {e}"); 1 }
+    };
     match sub.as_slice() {
         ["--svc", "add", name, rest @ ..] => {
             let mut d = ServiceDef { name: name.to_string(), user: std::env::var("USER").unwrap_or_default(), autostart: true, ..Default::default() };
@@ -317,7 +369,7 @@ pub fn cli(args: &[String]) -> i32 {
                     "--env" if i + 1 < rest.len() => { if let Some((k, v)) = rest[i + 1].split_once('=') { d.env.push((k.into(), v.into())); } i += 2; }
                     "--no-autostart" => { d.autostart = false; i += 1; }
                     "--" => { d.command = rest[i + 1..].iter().map(|w| if w.is_empty() || w.contains(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == '\\') { services::sh_quote(w) } else { w.to_string() }).collect::<Vec<_>>().join(" "); break; }
-                    other => { eprintln!("error: unexpected {other}; put the command after --"); return 2; }
+                    other => { let _ = writeln!(std::io::stderr(), "error: unexpected {other}; put the command after --"); return 2; }
                 }
             }
             show(call(&["svc-save", &services::render_conf(&d)]))
@@ -326,11 +378,18 @@ pub fn cli(args: &[String]) -> i32 {
         ["--svc", a @ ("start" | "stop" | "restart" | "status" | "get"), name] => show(call(&[&format!("svc-{a}"), name])),
         ["--svc", "remove", name] => show(call(&["svc-remove", name])),
         ["--svc", "log", name] => show(call(&["svc-log", name, "40"])),
+        ["--mc", "versions"] => show(call(&["mc-versions"])),
+        ["--mc", "create", name, version, ram, rest @ ..] => {
+            let eula = rest.contains(&"--eula");
+            let user = rest.iter().position(|a| *a == "--user").and_then(|i| rest.get(i + 1).copied()).map(String::from).unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+            show(call(&["mc-create", name, version, ram, if eula { "1" } else { "0" }, &user]))
+        }
+        ["--usb", "eject", mount] => show(call(&["usb-eject", mount])),
         ["--pkg", a @ ("add" | "del"), pkgs @ ..] if !pkgs.is_empty() => { let mut v = vec![format!("apk-{a}")]; v.extend(pkgs.iter().map(|p| p.to_string())); let r: Vec<&str> = v.iter().map(String::as_str).collect(); show(call(&r)) }
         ["--pkg", "search", q] => show(call(&["apk-search", q])),
         ["--pkg", "update"] => show(call(&["apk-update"])),
         ["--pkg", "list"] => show(call(&["apk-installed"])),
-        _ => { eprintln!("usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list"); 2 }
+        _ => { let _ = writeln!(std::io::stderr(), "usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions | create NAME VERSION 2|4|8 [--eula] [--user U]"); 2 }
     }
 }
 
@@ -477,6 +536,21 @@ mod tests {
         mk(52, 51, &["sleep-helper"]);
         assert_eq!(find_supervised_pid(&d, "exec85-ticker"), Some(51));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_screen_can_be_switched_off_and_on() {
+        let r = root("screen"); let f = Fake::new(); let c = Ctx { root: &r, runner: &f };
+        std::fs::create_dir_all(r.join("sys/class/graphics/fb0")).unwrap();
+        handle(&c, &w("screen-power off")).unwrap();
+        assert_eq!(std::fs::read_to_string(r.join("sys/class/graphics/fb0/blank")).unwrap(), "4");
+        handle(&c, &w("screen-power on")).unwrap();
+        assert_eq!(std::fs::read_to_string(r.join("sys/class/graphics/fb0/blank")).unwrap(), "0");
+        assert!(handle(&c, &w("screen-power maybe")).is_err() && handle(&c, &w("screen-power")).is_err());
+        let _ = std::fs::remove_dir_all(&r);
+        let r = root("noscreen"); let c = Ctx { root: &r, runner: &f };
+        assert!(handle(&c, &w("screen-power off")).unwrap_err().contains("cannot switch"), "a machine without that switch is reported, not a crash");
+        let _ = std::fs::remove_dir_all(&r);
     }
 
     #[test]

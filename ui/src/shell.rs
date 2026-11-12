@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const MAX_APPS: usize = 4;
+/// How often the drive row looks for a pendrive that was plugged in or pulled out.
+const DRIVE_CHECK: Duration = Duration::from_secs(2);
 
 pub struct AppWindow {
     pub app: Box<dyn Application>,
@@ -24,11 +26,18 @@ pub struct Shell {
     wake: Arc<dyn Fn() + Send + Sync>,
     home: PathBuf,
     last_state: String,
+    last_drive_check: Instant,
+    last_activity: Instant,
+    sleep_unit: Duration,
+    /// Effects that arose from a timer rather than a key (the main loop collects them with `take_effects`).
+    pending: Vec<Effect>,
+    /// Safely remove the drive mounted at the given path (replaced in tests).
+    eject: Box<dyn Fn(&str) -> Result<String, String>>,
 }
 
 impl Shell {
     pub fn new(cols: usize, rows: usize, mode: Mode, start: PathBuf, home: PathBuf, wake: Arc<dyn Fn() + Send + Sync>) -> Shell {
-        Shell { app: App::new(cols, rows, mode, start), windows: Vec::new(), wake, home, last_state: String::new() }
+        Shell { app: App::new(cols, rows, mode, start), windows: Vec::new(), wake, home, last_state: String::new(), last_drive_check: Instant::now(), last_activity: Instant::now(), sleep_unit: Duration::from_secs(60), pending: Vec::new(), eject: Box::new(|m| crate::helper::call(&["usb-eject", m])) }
     }
 
     fn env(&self) -> Env { Env { wake: self.wake.clone(), home: self.home.clone(), cwd: self.app.cwd.clone() } }
@@ -75,6 +84,12 @@ impl Shell {
 
     /// Handle one key. Returns the effects the outside world has to carry out.
     pub fn handle(&mut self, k: Key) -> Vec<Effect> {
+        self.last_activity = Instant::now();
+        if self.app.asleep {
+            // The first key only wakes the screen; it is not passed on to whatever was on it.
+            self.app.asleep = false;
+            return vec![Effect::ScreenPower(true)];
+        }
         let modal = self.app.dialog.is_some() || self.app.menu.is_some();
         if !modal {
             if let Focus::App(i) = self.app.focus {
@@ -93,10 +108,27 @@ impl Shell {
                 Effect::OpenApp(kind) => self.open(kind),
                 Effect::OpenFile(p) => self.open_file(p),
                 Effect::CloseWindow(i) => self.request_close(i),
+                Effect::Eject(m) => self.eject_drive(m),
+                Effect::Sleep => { self.app.asleep = true; outside.push(Effect::ScreenPower(false)); }
+                Effect::SaveSleep(m) => { self.last_activity = Instant::now(); outside.push(Effect::SaveSleep(m)); }
                 other => outside.push(other),
             }
         }
         outside
+    }
+
+    /// How long without a key before the screen turns off by itself (tests can shorten it).
+    fn sleep_after(&self) -> Duration { self.sleep_unit * self.app.sleep_minutes }
+
+    pub fn take_effects(&mut self) -> Vec<Effect> { std::mem::take(&mut self.pending) }
+
+    /// Unmount a pendrive. A folder window that is showing it first moves away, so it does not keep the drive busy.
+    fn eject_drive(&mut self, mount: PathBuf) {
+        if self.app.cwd.starts_with(&mount) { self.app.open_dir(PathBuf::from("/"), None); }
+        let m = mount.to_string_lossy().into_owned();
+        let result = (self.eject)(&m);
+        self.app.refresh_drives();
+        self.app.msg = Some(match result { Ok(s) => s, Err(e) => e }); // after the refresh, so "Safe to remove." is what stays on screen
     }
 
     // ---- timers --------------------------------------------------------------------------------
@@ -104,7 +136,9 @@ impl Shell {
     /// How long the main loop may sleep before an app needs a tick (None = until the next key).
     pub fn next_deadline(&self) -> Option<Duration> {
         let now = Instant::now();
-        self.windows.iter().filter_map(|w| w.app.interval().map(|iv| (w.last_tick + iv).saturating_duration_since(now))).min()
+        let drives = (self.last_drive_check + DRIVE_CHECK).saturating_duration_since(now);
+        let idle = if self.app.sleep_minutes > 0 && !self.app.asleep { Some((self.last_activity + self.sleep_after()).saturating_duration_since(now)) } else { None };
+        Some(self.windows.iter().filter_map(|w| w.app.interval().map(|iv| (w.last_tick + iv).saturating_duration_since(now))).chain(Some(drives)).chain(idle).min().unwrap_or(drives))
     }
 
     /// Run the ticks that are due. Returns true if anything ran (so the screen needs a redraw).
@@ -112,6 +146,8 @@ impl Shell {
         let now = Instant::now();
         let env = self.env();
         let mut ran = false;
+        if self.app.sleep_minutes > 0 && !self.app.asleep && now.duration_since(self.last_activity) >= self.sleep_after() { self.app.asleep = true; self.pending.push(Effect::ScreenPower(false)); ran = true; }
+        if now.duration_since(self.last_drive_check) >= DRIVE_CHECK { self.last_drive_check = now; if self.app.refresh_drives() { ran = true; } }
         for w in self.windows.iter_mut() {
             if let Some(iv) = w.app.interval() {
                 if now.duration_since(w.last_tick) >= iv { w.app.tick(&env); w.last_tick = now; ran = true; }
@@ -136,7 +172,7 @@ impl Shell {
 
     /// The lines printed on the console after an event. The app line is only printed when it changed.
     pub fn state_lines(&mut self, extra: &str) -> Vec<String> {
-        let mut v = vec![format!("{} windows={}{}", self.app.state_line(), self.windows.len(), extra)];
+        let mut v = vec![format!("{} windows={} asleep={}{}", self.app.state_line(), self.windows.len(), self.app.asleep, extra)];
         if let Focus::App(i) = self.app.focus {
             if let Some(w) = self.windows.get(i) { v.push(format!("EXEC85_APP {}", w.app.state())); }
         }
@@ -160,6 +196,90 @@ mod tests {
     fn shell() -> Shell { Shell::new(100, 40, Mode::Dark, PathBuf::from("/"), std::env::temp_dir(), Arc::new(|| {})) }
     fn press(s: &mut Shell, keys: &str) -> Vec<Effect> {
         keys.split(',').filter(|x| !x.is_empty()).flat_map(|n| s.handle(parse_key(n).unwrap())).collect()
+    }
+
+    fn fake_drive(mount: &str) -> crate::fs::Drive { crate::fs::Drive { label: "STICK".into(), mount: PathBuf::from(mount), fstype: "vfat".into(), total: 1 << 30, free: 1 << 29 } }
+
+    #[test]
+    fn eject_moves_away_from_the_drive_and_reports_the_result() {
+        let mut s = shell();
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let seen2 = seen.clone();
+        s.eject = Box::new(move |m| { seen2.borrow_mut().push(m.to_string()); Ok("Safe to remove.".into()) });
+        s.app.drives.push(fake_drive("/media/STICK"));
+        s.app.focus = Focus::Drives;
+        s.app.drive_cursor = s.app.drives.len() - 1;
+        let fx = s.handle(parse_key("e").unwrap());
+        assert!(fx.is_empty(), "ejecting is handled inside the shell");
+        assert_eq!(*seen.borrow(), vec!["/media/STICK".to_string()]);
+        assert_eq!(s.app.msg.as_deref(), Some("Safe to remove."));
+        s.eject = Box::new(|_| Err("Something is still using the drive.".into()));
+        s.app.drives.push(fake_drive("/media/STICK"));
+        s.app.drive_cursor = s.app.drives.len() - 1;
+        s.handle(parse_key("e").unwrap());
+        assert_eq!(s.app.msg.as_deref(), Some("Something is still using the drive."));
+    }
+
+    #[test]
+    fn sleep_now_blanks_the_screen_and_the_next_key_only_wakes_it() {
+        let mut s = shell();
+        let before = s.app.sel;
+        let fx = press(&mut s, "f8");
+        assert!(s.app.asleep && fx == vec![Effect::ScreenPower(false)], "{fx:?}");
+        let fx = press(&mut s, "down");
+        assert!(!s.app.asleep && fx == vec![Effect::ScreenPower(true)], "{fx:?}");
+        assert_eq!(s.app.sel, before, "the waking key did not move the selection");
+        press(&mut s, "down");
+        assert!(s.app.sel >= before, "the next key works as usual");
+        assert!(s.state_lines("")[0].contains("asleep=false"));
+    }
+
+    #[test]
+    fn the_screen_sleeps_by_itself_after_the_chosen_time_and_apps_keep_running() {
+        let mut s = shell();
+        s.sleep_unit = Duration::from_millis(10);
+        press(&mut s, "alt-v");                                  // View menu
+        for _ in 0..7 { press(&mut s, "down"); }                // to "Sleep after 5 minutes" (separators are skipped)
+        let fx = press(&mut s, "ret");
+        assert_eq!(fx, vec![Effect::SaveSleep(5)], "the choice is saved");
+        assert_eq!(s.app.sleep_minutes, 5);
+        s.open(Kind::Clock);
+        assert!(s.next_deadline().unwrap() <= Duration::from_millis(60), "the main loop wakes up in time to blank the screen");
+        std::thread::sleep(Duration::from_millis(90));
+        assert!(s.tick() && s.app.asleep);
+        assert_eq!(s.take_effects(), vec![Effect::ScreenPower(false)]);
+        assert_eq!(s.windows.len(), 1, "windows stay open while the screen is off");
+        s.tick();
+        assert!(s.take_effects().is_empty(), "it only blanks once");
+        press(&mut s, "x");
+        assert!(!s.app.asleep);
+        // "never" turns it off again
+        press(&mut s, "alt-v");
+        for _ in 0..10 { press(&mut s, "down"); }
+        assert_eq!(press(&mut s, "ret"), vec![Effect::SaveSleep(0)]);
+        std::thread::sleep(Duration::from_millis(30));
+        s.tick();
+        assert!(!s.app.asleep, "never means never");
+    }
+
+    #[test]
+    fn only_usb_drives_can_be_ejected() {
+        let mut s = shell();
+        s.app.focus = Focus::Drives;
+        s.app.drive_cursor = 0; // the root drive
+        press(&mut s, "e");
+        assert!(s.app.msg.as_deref().unwrap_or("").contains("cannot be ejected"), "{:?}", s.app.msg);
+    }
+
+    #[test]
+    fn the_drive_row_notices_changes() {
+        let mut s = shell();
+        assert!(!s.app.refresh_drives() || s.app.drives.len() >= 1);
+        let n = s.app.drives.len();
+        s.app.drives.push(fake_drive("/media/GONE"));
+        assert!(s.app.refresh_drives(), "a drive that vanished is noticed");
+        assert_eq!(s.app.drives.len(), n);
+        assert!(s.app.msg.as_deref().unwrap_or("").contains("removed"));
     }
 
     #[test]

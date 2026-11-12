@@ -331,7 +331,10 @@ impl Terminal {
         let (master, slave) = crate::sys::open_pty()?;
         crate::sys::set_winsize(master.as_raw_fd(), cols, rows);
         let mut cmd = Command::new(program);
-        cmd.args(args).env("TERM", "linux").current_dir(cwd)
+        cmd.args(args).env("TERM", "linux").current_dir(cwd);
+        // Our prompt and short names (read by the shell at start-up) when the file is there.
+        if std::path::Path::new("/etc/exec85/shrc").exists() { cmd.env("ENV", "/etc/exec85/shrc"); }
+        cmd
             .stdin(Stdio::from(slave.try_clone()?)).stdout(Stdio::from(slave.try_clone()?)).stderr(Stdio::from(slave));
         // SAFETY: only system calls run between fork and exec: a new session, then the slave becomes the controlling terminal.
         unsafe {

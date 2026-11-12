@@ -7,6 +7,7 @@
 mod account;
 mod app;
 mod apps;
+mod cmds;
 mod crypt;
 mod disks;
 mod display;
@@ -20,12 +21,14 @@ mod installer;
 mod keys;
 mod layout;
 mod login;
+mod mc;
 mod paint;
 mod shell;
 mod supervisor;
 mod helper;
 mod services;
 mod sys;
+mod usb;
 mod ui;
 
 use app::{App, Effect};
@@ -84,6 +87,17 @@ fn save_theme(m: Mode) {
     };
     if let Some(d) = path.parent() { let _ = stdfs::create_dir_all(d); }
     let _ = stdfs::write(path, text);
+}
+
+fn sleep_path() -> Option<PathBuf> { std::env::var_os("HOME").map(|h| Path::new(&h).join(".config/exec85/sleep")) }
+
+/// Minutes without a key before the screen turns off by itself (0 = never).
+fn read_sleep() -> u32 { sleep_path().and_then(|p| stdfs::read_to_string(p).ok()).and_then(|s| s.trim().parse().ok()).filter(|m| [0, 5, 15, 60].contains(m)).unwrap_or(0) }
+
+fn save_sleep(minutes: u32) {
+    let Some(path) = sleep_path() else { return };
+    if let Some(d) = path.parent() { let _ = stdfs::create_dir_all(d); }
+    let _ = stdfs::write(path, format!("{minutes}\n"));
 }
 
 struct Screen { display: display::Display, m: Metrics, canvas: Canvas }
@@ -225,6 +239,7 @@ fn stage_shell() -> ! {
     let wake_tx = tx.clone();
     let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || { let _ = wake_tx.send(Event::Wake); });
     let mut shell = shell::Shell::new(cols, rows, read_mode(), start, home, wake);
+    shell.app.sleep_minutes = read_sleep();
 
     ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m);
     s.show();
@@ -242,13 +257,17 @@ fn stage_shell() -> ! {
         }
         while let Ok(e) = rx.try_recv() { if let Event::Key(k) = e { effects.extend(shell.handle(k)); from_key = true; } }
         shell.tick();
-        ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m);
+        effects.extend(shell.take_effects());
+        // While asleep the screen shows nothing at all (and the display is switched off below).
+        if shell.app.asleep { let (w, h) = (s.canvas.w, s.canvas.h); s.canvas.fill_rect(0, 0, w, h, 0); } else { ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m); }
         s.show();
         let lines = if from_key { shell.state_lines(&extra) } else { shell.changed_state_lines(&extra) };
         for l in lines { log(&l); }
         for e in effects {
             match e {
                 Effect::SaveTheme(m) => save_theme(m),
+                Effect::SaveSleep(m) => save_sleep(m),
+                Effect::ScreenPower(on) => { let _ = helper::call(&["screen-power", if on { "on" } else { "off" }]); }
                 Effect::Logout => std::process::exit(supervisor::EXIT_LOGOUT),
                 Effect::PowerOff => std::process::exit(supervisor::EXIT_POWEROFF),
                 Effect::Reboot => std::process::exit(supervisor::EXIT_REBOOT),
@@ -313,6 +332,20 @@ fn render_to_file(args: &[String]) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // Installed under another name (dir, disk, about, get ...), the program acts as that command.
+    if let Some(name) = args.first().and_then(|a| Path::new(a).file_name()).map(|n| n.to_string_lossy().into_owned()) {
+        if let Some(code) = cmds::run(&name, &args[1..]) { std::process::exit(code); }
+        // `svc` and `pkg` are short forms of `exec85 --svc` and `exec85 --pkg`.
+        if name == "svc" || name == "pkg" || name == "mc" {
+            let mut a = vec![format!("--{name}")];
+            a.extend(args[1..].iter().cloned());
+            std::process::exit(helper::cli(&a));
+        }
+    }
+    if args.get(1).map(String::as_str) == Some("--cmd") {
+        if let Some(code) = args.get(2).and_then(|n| cmds::run(n, &args[3..])) { std::process::exit(code); }
+        eprintln!("unknown command; try: exec85 --cmd help"); std::process::exit(2);
+    }
     match args.get(1).map(String::as_str) {
         Some("--version") => println!("exec85 {}", env!("CARGO_PKG_VERSION")),
         Some("--ppm") => render_to_file(&args[1..]),
@@ -320,7 +353,7 @@ fn main() {
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
         Some("--helperd") => helper::serve(),
-        Some("--svc") | Some("--pkg") => std::process::exit(helper::cli(&args[1..])),
+        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") => std::process::exit(helper::cli(&args[1..])),
         None => supervisor::run(),
         Some(other) => { eprintln!("unknown option {other}; try --version"); std::process::exit(2); }
     }

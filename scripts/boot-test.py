@@ -69,7 +69,7 @@ def window_pixel(shot):   # blank cell inside the left window's bottom margin (s
 
 
 class VM:
-    def __init__(self, tag, cdrom=None, disk=None, mem=None):
+    def __init__(self, tag, cdrom=None, disk=None, mem=None, extra=()):
         self.tag = tag
         self.log = os.path.join(outdir, f"serial-{firmware}-{tag}.log")
         self.sock = os.path.join(outdir, f"mon-{firmware}-{tag}.sock")
@@ -77,6 +77,7 @@ class VM:
             if os.path.exists(p): os.remove(p)
         cmd = ["qemu-system-x86_64", "-machine", "q35", "-accel", accel, "-m", str(mem or MEM_MB), "-smp", "2", "-vga", "std", "-display", "none",
                "-no-reboot", "-serial", f"file:{self.log}", "-monitor", f"unix:{self.sock},server,nowait"]
+        cmd += list(extra)
         if cdrom: cmd += ["-cdrom", cdrom, "-boot", "d"]
         else: cmd += ["-boot", "c"]
         if disk: cmd += ["-drive", f"file={disk},format=raw,if=ide,cache=unsafe"]
@@ -126,9 +127,11 @@ class VM:
                 time.sleep(0.1)
             self.mon = socket.socket(socket.AF_UNIX); self.mon.settimeout(10); self.mon.connect(self.sock); self.mon.recv(4096)
         self.mon.sendall((command + "\n").encode()); time.sleep(0.12)
-        try: self.mon.settimeout(0.2); self.mon.recv(65536)
+        reply = b""
+        try: self.mon.settimeout(0.2); reply = self.mon.recv(65536)
         except Exception: pass
         self.mon.settimeout(10)
+        return reply.decode(errors="replace")
 
     def screenshot(self, name):
         ppm = os.path.join(outdir, f"{firmware}-{name}.ppm")
@@ -223,7 +226,7 @@ def scenario_live():
         step("live: help dialog drawn", bar_pixel(vm.screenshot("6-help")) == DARK["bar"])
         press(vm, "esc", dialog="none")
         press(vm, "f10", menu="file")
-        press(vm, "up", item="15")
+        press(vm, "up", item="16")
         press(vm, "ret", dialog="confirm_poweroff_")
         press(vm, "n", dialog="none")
         # Log out goes back to the installer
@@ -341,7 +344,7 @@ def scenario_install():
         step("installed: the service is running", d is not None)
         press(vm, "f4")
         press(vm, "f10", menu="file")
-        press(vm, "up"); press(vm, "up", item="14")
+        press(vm, "up"); press(vm, "up", item="15")
         press(vm, "ret")
         vm.monitor("sendkey y")
         for _ in range(300):
@@ -408,6 +411,13 @@ def svc_line(vm, name, pred, timeout=60, after=0):
         time.sleep(0.5)
     return None
 
+def dump_file(vm, path, lines=4, start=1):
+    """Print lines of a file in the VM (diagnostics for a failed step)."""
+    for i in range(start, lines + 1):
+        try: terminal_run(vm, f"sed -n {i}p {path} | cut -c1-66; echo FD{i}", f"FD{i}", 20, "diagnostic")
+        except AssertionError: pass
+        print("FILE>", path, i, (app_line(vm, "terminal", 1) or {}).get("l1"), flush=True)
+
 def svc_count(vm, name): return sum(1 for l in vm.text().splitlines() if f"EXEC85_SVC name={name} " in l)
 
 def app_line(vm, name, timeout=STEP_TIMEOUT):
@@ -443,7 +453,13 @@ def open_app(vm, index):
 
 def scenario_testing():
     I = "EXEC85_INSTALLER"
-    vm = VM("testing", cdrom=iso, mem=3072)   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
+    usb = os.path.join(outdir, "usb.img")
+    with open(os.path.join(outdir, "hello.txt"), "w") as f: f.write("hello from the pendrive\n")
+    with open(usb, "wb") as f: f.truncate(64 << 20)
+    subprocess.run(["mkfs.vfat", "-F", "32", "-n", "TESTUSB", usb], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["mcopy", "-i", usb, os.path.join(outdir, "hello.txt"), "::HELLO.TXT"], check=True)
+    # the USB controller and the stick's disk exist from the start; the stick itself is plugged in later with device_add
+    vm = VM("testing", cdrom=iso, mem=3072, extra=["-device", "qemu-xhci,id=xhci", "-drive", f"if=none,id=usbd,file={usb},format=raw"])   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
     try:
         step("testing: installer is up", vm.wait_for(r"EXEC85_SCREEN installer", 600 if SLOW else 120) is not None)
         press(vm, "ret", I, step="theme")
@@ -497,6 +513,52 @@ def scenario_testing():
             press(vm, "f4")
         vm.screenshot("t1-shell")
 
+        # ---- pendrives: plug in, browse, write, eject, pull out ----
+        vm.monitor("device_add usb-storage,drive=usbd,id=usbdev,bus=xhci.0")
+        m = vm.wait_for(r"EXEC85_USB added dev=(\S+) fs=vfat label=TESTUSB mount=(\S+)", 90)
+        step("usb: the plugged-in pendrive is detected and mounted", m is not None, "\n".join(l for l in vm.text().splitlines() if "EXEC85_USB" in l))
+        mount = m[2]
+        d = vm.wait_line("EXEC85_STATE", lambda d: "TESTUSB" in d.get("drives", ""), 30)
+        step("usb: the Explorer shows it in the drive row", d is not None)
+        open_app(vm, 1)
+        terminal_run(vm, "cat /media/TESTUSB/HELLO.TXT", "hello_from", 30, "usb: a file on the pendrive can be read")
+        terminal_run(vm, "echo wr$((5-3))ten > /media/TESTUSB/new.txt; cat /media/TESTUSB/new.txt", "wr2ten", 30, "usb: a file can be written to the pendrive")
+        terminal_run(vm, "cp /media/TESTUSB/HELLO.TXT /tmp/copy.txt; ls -l /tmp/copy.txt | cut -c1-30; echo CP$((5-3))", "CP2", 30, "usb: a file can be copied off the pendrive")
+        terminal_run(vm, "rm /media/TESTUSB/new.txt; ls /media/TESTUSB; echo LS$((5-3))", "LS2", 30, "usb: a file on the pendrive can be deleted")
+        press(vm, "f4")
+        # eject from the Explorer: drive row, last drive, E
+        press(vm, "tab", focus="details"); press(vm, "tab", focus="drives"); press(vm, "end")
+        n = len(vm.lines("EXEC85_STATE"))
+        vm.monitor("sendkey e")
+        d = vm.wait_line("EXEC85_STATE", lambda d: "TESTUSB" not in d.get("drives", ""), 60, after=n)
+        step("usb: Eject unmounts the drive and removes it from the drive row", d is not None, str(vm.lines("EXEC85_STATE")[-1:]))
+        open_app(vm, 1)
+        terminal_run(vm, "ls /media; echo MD$((5-3))", "MD2", 30, "usb: the drive's folder is gone after eject")
+        press(vm, "f4")
+        vm.monitor("device_del usbdev")
+        step("usb: pulling the stick out afterwards is noticed", vm.wait_for(r"EXEC85_USB removed mount=", 60) is not None)
+        time.sleep(3)
+        vm.monitor(f"drive_add 0 if=none,id=usbd,file={usb},format=raw")   # unplugging the stick also released its virtual disk
+        reply = vm.monitor("device_add usb-storage,drive=usbd,id=usbdev2,bus=xhci.0")
+        print("device_add reply:", repr(re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", reply)[-300:]), flush=True)
+        if vm.wait_for(r"EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB mount=\S+(?s:.*)EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB", 40) is None:
+            open_app(vm, 1)
+            for i, cmd in enumerate(["tail -2 /proc/partitions | tr -s ' ' '_'; echo DX1", "ls /sys/block | tr '\\n' ' '; echo DX2", "ls /dev | grep sd | tr '\\n' ' '; echo DX3", "grep media /proc/mounts | cut -c1-60; echo DX4"], 1):
+                try: terminal_run(vm, cmd, f"DX{i}", 20, "diagnostic")
+                except AssertionError: pass
+                print("DIAG>", i, app_line(vm, "terminal", 1), flush=True)
+        step("usb: plugging it in again mounts it again", vm.wait_for(r"EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB mount=\S+(?s:.*)EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB", 90) is not None, "\n".join(l for l in vm.text().splitlines() if "EXEC85_USB" in l) + " | " + repr(reply))
+
+        # ---- our own terminal commands ----
+        open_app(vm, 1)
+        terminal_run(vm, "help | head -1", "Exec85_commands", 30, "commands: help")
+        terminal_run(vm, "dir /etc | tail -1", "folders,", 30, "commands: dir")
+        terminal_run(vm, "disk | head -2 | tail -1", "free_of", 30, "commands: disk")
+        terminal_run(vm, "about | head -1", "Exec85_0.", 30, "commands: about")
+        terminal_run(vm, "get | head -1", "usage:_get", 30, "commands: get explains itself")
+        terminal_run(vm, "svc 2>&1 | head -1", "usage:_exec85", 30, "commands: svc is a short form of exec85 --svc")
+        press(vm, "f4")
+
         # ---- services and software, with nothing specific built in ----
         open_app(vm, 1)    # terminal
         step("services: the helper is running", vm.wait_for(r"EXEC85_HELPER ready", 30) is not None)
@@ -513,6 +575,17 @@ def scenario_testing():
         d = svc_line(vm, "web", lambda d: d["status"] == "running" and d["pid"] not in ("-", pid1), 60, after=n)
         step("services: it comes back by itself with a new process", d is not None, f"old pid {pid1}")
         terminal_run(vm, "wget -q -O /dev/null http://127.0.0.1:8080/; echo HTTP2=$?", "HTTP2=0", 60, "services: the website answers again")
+
+        # ---- sleep mode: the screen goes black, the service keeps running, a key wakes it without being used ----
+        n = svc_count(vm, "web")
+        press(vm, "f8", asleep="true")
+        step("sleep: the screen is black", bar_pixel(vm.screenshot("t2-asleep")) == (0, 0, 0))
+        time.sleep(6)
+        last = [l for l in vm.text().splitlines() if "EXEC85_SVC name=web " in l][-1]
+        step("sleep: the web service keeps running while the screen is off", svc_count(vm, "web") == n and "status=running" in last, last)
+        press(vm, "ctrl-h", asleep="false", hidden="false")
+        step("sleep: a key wakes the screen", bar_pixel(vm.screenshot("t3-awake")) == DARK["bar"])
+        terminal_run(vm, "wget -q -O /dev/null http://127.0.0.1:8080/; echo HTTP3=$?", "HTTP3=0", 60, "sleep: the website still answers after waking")
         terminal_run(vm, "exec85 --svc add nginx --user root -- nginx -g 'daemon off;'; exec85 --svc start nginx; echo NG=$?", "NG=0", 60, "services: nginx defined and started")
         d = svc_line(vm, "nginx", lambda d: d["status"] == "running", 60)
         step("services: nginx is running", d is not None)
@@ -556,6 +629,26 @@ def scenario_testing():
                 print("DIAG>", (app_line(vm, "terminal", 1) or {}).get("l1"), flush=True)
         step("software: Java installed with apk", re.search(r"JPKG=0", d.get("l1", "") + d.get("l2", "") + d.get("l3", "")) is not None, str(d))
         terminal_run(vm, "java -version 2>&1 | head -1; echo JAVA=$?", "JAVA=0", 120, "software: Java runs")
+
+        # ---- the Minecraft helper: real download from Mojang, checksum, Java, EULA ----
+        terminal_run(vm, "mc versions | head -1", "latest_", 120, "minecraft: the version list comes from Mojang")
+        terminal_run(vm, "mc create craft2 $(mc versions | head -1 | cut -d' ' -f2) 2 > /tmp/m2.txt 2>&1; echo M2=$((5-3))", "M2=2", 900, "minecraft: the install command finishes")
+        try: terminal_run(vm, "tail -1 /srv/minecraft/craft2/eula.txt", "eula=false", 30, "minecraft: the EULA stays unaccepted unless you tick it")
+        except AssertionError:
+            dump_file(vm, "/tmp/m2.txt", 5)
+            raise
+        terminal_run(vm, "mc create craft $(mc versions | head -1 | cut -d' ' -f2) 2 --eula > /tmp/m3.txt 2>&1; echo M3=$((5-3))", "M3=2", 900, "minecraft: the install-with-EULA command finishes")
+        d = svc_line(vm, "craft", lambda d: d["status"] == "running" and d["pid"] != "-", 120)
+        if d is None:
+            dump_file(vm, "/tmp/m3.txt", 14, 6)
+            terminal_run(vm, "svc log craft | tail -3 | cut -c1-66; echo LG$((5-3))", "LG2", 20, "diagnostic")
+            print("LOG>", app_line(vm, "terminal", 1), flush=True)
+        step("minecraft: the server is running as a service", d is not None)
+        try: terminal_run(vm, "sleep 40; cp /var/log/exec85/craft.log /tmp/c.log; grep -c 'minecraft server version' /tmp/c.log; echo C$((5-3))", "re:[1-9]\\d*C2", 240, "minecraft: the server program starts (Java and the downloaded jar work)")
+        except AssertionError:
+            dump_file(vm, "/tmp/c.log", 10)
+            print("SVC>", [l for l in vm.text().splitlines() if "name=craft " in l][-3:], flush=True)
+            raise
     finally:
         vm.stop()
 

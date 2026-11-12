@@ -18,16 +18,17 @@ pub enum Focus { Drives, Files, Details, App(usize) }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Act {
-    Open, Parent, Refresh, NewFile, NewFolder, Rename, Delete, Copy, Cut, Paste, Logout, Reboot, PowerOff,
+    Open, Parent, Refresh, NewFile, NewFolder, Rename, Delete, Copy, Cut, Paste, Eject, Logout, Reboot, PowerOff,
     OpenApp(Kind), NextWindow, CloseWindow,
     Dark, Light, SortName, SortSize, SortDate, Hidden,
     NextPane, Stacked, Details,
     Keys, About, Sep,
+    Sleep, SleepIn(u32),
 }
 
 /// Things the shell asks the outside world (or the window manager) to do.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Effect { PowerOff, Reboot, Logout, SaveTheme(Mode), OpenApp(Kind), OpenFile(PathBuf), CloseWindow(usize) }
+pub enum Effect { PowerOff, Reboot, Logout, SaveTheme(Mode), OpenApp(Kind), OpenFile(PathBuf), CloseWindow(usize), Eject(PathBuf), Sleep, SaveSleep(u32), ScreenPower(bool) }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PromptKind { NewFile, NewFolder, Rename(String) }
@@ -47,12 +48,15 @@ pub const MENUS: [MenuDef; 5] = [
         it("New file", "Ctrl+N", Act::NewFile), it("New folder", "F7", Act::NewFolder), it("Rename", "F2", Act::Rename), it("Delete", "Del", Act::Delete),
         it("", "", Act::Sep),
         it("Copy", "Ctrl+C", Act::Copy), it("Cut", "Ctrl+X", Act::Cut), it("Paste", "Ctrl+V", Act::Paste),
+        it("Eject drive", "E in drives", Act::Eject),
         it("", "", Act::Sep), it("Log out", "", Act::Logout), it("Restart", "", Act::Reboot), it("Shut down", "", Act::PowerOff),
     ]},
     MenuDef { title: "View", hot: 'v', items: &[
         it("Dark theme", "", Act::Dark), it("Light theme", "", Act::Light), it("", "", Act::Sep),
         it("Sort by name", "", Act::SortName), it("Sort by size", "", Act::SortSize), it("Sort by date", "", Act::SortDate),
         it("", "", Act::Sep), it("Show hidden files", "Ctrl+H", Act::Hidden),
+        it("", "", Act::Sep), it("Sleep now (screen off)", "F8", Act::Sleep),
+        it("Sleep after 5 minutes", "", Act::SleepIn(5)), it("Sleep after 15 minutes", "", Act::SleepIn(15)), it("Sleep after 60 minutes", "", Act::SleepIn(60)), it("Never sleep by itself", "", Act::SleepIn(0)),
     ]},
     MenuDef { title: "Apps", hot: 'a', items: &[
         it("Notepad", "", Act::OpenApp(Kind::Notepad)), it("Terminal (Cmd)", "", Act::OpenApp(Kind::Terminal)),
@@ -61,6 +65,7 @@ pub const MENUS: [MenuDef; 5] = [
         it("Clock and calendar", "", Act::OpenApp(Kind::Clock)), it("Calculator", "", Act::OpenApp(Kind::Calculator)),
         it("Reversi", "", Act::OpenApp(Kind::Reversi)), it("Snake", "", Act::OpenApp(Kind::Snake)),
         it("Services", "", Act::OpenApp(Kind::Services)), it("Software", "", Act::OpenApp(Kind::Software)),
+        it("Minecraft server", "", Act::OpenApp(Kind::Minecraft)),
     ]},
     MenuDef { title: "Window", hot: 'w', items: &[
         it("Next window", "F6", Act::NextWindow), it("Close window", "F4", Act::CloseWindow), it("", "", Act::Sep),
@@ -99,6 +104,9 @@ pub struct App {
     pub app_count: usize,
     /// Copied or cut item: (path, is_cut).
     pub clipboard: Option<(PathBuf, bool)>,
+    /// Minutes without a key before the screen turns off by itself (0 = never).
+    pub sleep_minutes: u32,
+    pub asleep: bool,
     /// One-line message for the status bar (errors, hints); cleared by the next key.
     pub msg: Option<String>,
 }
@@ -108,7 +116,7 @@ impl App {
         let mut a = App {
             cols, rows, mode, drives: fs::drives(), drive_cursor: 0, cwd: PathBuf::from("/"), entries: Vec::new(),
             sel: 0, top: 0, sort: Sort::Name, show_hidden: false, focus: Focus::Files, stacked: false, details: true,
-            menu: None, dialog: None, app_count: 0, clipboard: None, msg: None,
+            menu: None, dialog: None, app_count: 0, clipboard: None, sleep_minutes: 0, asleep: false, msg: None,
         };
         if !a.open_dir(start, None) { a.open_dir(PathBuf::from("/"), None); a.msg = None; }
         a
@@ -191,6 +199,20 @@ impl App {
         }
     }
 
+    /// Look at the mounted drives again (a pendrive may have been plugged in or pulled out). Returns true if the row changed.
+    pub fn refresh_drives(&mut self) -> bool {
+        let now = fs::drives();
+        let key = |v: &[Drive]| v.iter().map(|d| format!("{}|{}", d.label, d.mount.display())).collect::<Vec<_>>();
+        if key(&now) == key(&self.drives) { return false; }
+        let added: Vec<String> = now.iter().filter(|d| !self.drives.iter().any(|o| o.mount == d.mount)).map(|d| d.label.clone()).collect();
+        let removed = self.drives.iter().any(|o| !now.iter().any(|d| d.mount == o.mount));
+        self.drives = now;
+        if !self.cwd.exists() || !self.drives.iter().any(|d| self.cwd.starts_with(&d.mount)) { self.open_dir(PathBuf::from("/"), None); }
+        self.drive_cursor = self.current_drive().min(self.drives.len().saturating_sub(1));
+        if let Some(l) = added.first() { self.msg = Some(format!("Drive connected: {l}")); } else if removed { self.msg = Some("A drive was removed.".into()); }
+        true
+    }
+
     fn go_parent(&mut self) {
         if let Some(p) = self.cwd.parent().map(|p| p.to_path_buf()) {
             let left = self.cwd.file_name().map(|n| n.to_string_lossy().into_owned());
@@ -266,7 +288,7 @@ impl App {
 
     /// Keys that always belong to the shell, even when an app window has the focus.
     pub fn is_global(k: &Key) -> bool {
-        if matches!(k.code, code::F1 | code::F4 | code::F6 | code::F10) { return true; }
+        if matches!(k.code, code::F1 | code::F4 | code::F6 | code::F8 | code::F10) { return true; }
         k.alt && !k.ctrl && k.base_char().map_or(false, |c| MENUS.iter().any(|m| m.hot == c))
     }
 
@@ -314,6 +336,7 @@ impl App {
             Act::SortSize => self.sort == Sort::Size,
             Act::SortDate => self.sort == Sort::Date,
             Act::Hidden => self.show_hidden,
+            Act::SleepIn(m) => self.sleep_minutes == m,
             Act::Stacked => self.stacked,
             Act::Details => self.details,
             _ => return None,
@@ -332,6 +355,14 @@ impl App {
             Act::Copy => self.do_copy(false),
             Act::Cut => self.do_copy(true),
             Act::Paste => self.do_paste(),
+            Act::Eject => {
+                // The drive under the cursor in the drive row, otherwise the drive of the folder being shown.
+                let i = if self.focus == Focus::Drives { self.drive_cursor } else { self.current_drive() };
+                match self.drives.get(i) {
+                    Some(d) if d.mount.starts_with("/media/") => return Some(Effect::Eject(d.mount.clone())),
+                    _ => self.msg = Some("That drive cannot be ejected (only pendrives and other USB drives can).".into()),
+                }
+            }
             Act::OpenApp(kind) => return Some(Effect::OpenApp(kind)),
             Act::NextWindow => self.cycle_window(1),
             Act::CloseWindow => if let Focus::App(i) = self.focus { return Some(Effect::CloseWindow(i)); } else { self.msg = Some("Only app windows can be closed.".into()); },
@@ -350,6 +381,8 @@ impl App {
                 if !self.details && self.focus == Focus::Details { self.focus = Focus::Files; }
                 self.fix_scroll();
             }
+            Act::Sleep => return Some(Effect::Sleep),
+            Act::SleepIn(m) => { self.sleep_minutes = m; return Some(Effect::SaveSleep(m)); }
             Act::Keys => self.dialog = Some(Dialog::Keys),
             Act::About => self.dialog = Some(Dialog::About),
             Act::Sep => {}
@@ -397,6 +430,7 @@ impl App {
             code::F10 => { self.menu = Some(MenuState { menu: 0, item: first_item(0) }); return None; }
             code::F1 => return self.run(Act::Keys),
             code::F5 => return self.run(Act::Refresh),
+            code::F8 => return self.run(Act::Sleep),
             code::TAB if !matches!(self.focus, Focus::App(_)) => { self.next_pane(if k.shift { -1 } else { 1 }); return None; }
             _ => {}
         }
@@ -421,7 +455,7 @@ impl App {
                 code::HOME => self.drive_cursor = 0,
                 code::END => self.drive_cursor = self.drives.len().saturating_sub(1),
                 code::ENTER | code::DOWN => { self.go_to_drive(); self.focus = Focus::Files; }
-                _ => {}
+                _ => if k.ch().map(|c| c.to_ascii_lowercase()) == Some('e') { return self.run(Act::Eject); },
             },
             Focus::Details | Focus::App(_) => {}
         }
@@ -515,11 +549,11 @@ impl App {
             Some(d) => format!("{d:?}").to_lowercase(),
         };
         format!(
-            "EXEC85_STATE dir={} index={} name={} count={} drive={} focus={} menu={} item={} dialog={} theme={} sort={} hidden={} layout={} details={}",
+            "EXEC85_STATE dir={} index={} name={} count={} drive={} focus={} menu={} item={} dialog={} theme={} sort={} hidden={} layout={} details={} drives={}",
             clean(&self.cwd.to_string_lossy()), self.sel, clean(self.selected().map_or("-", |e| e.name.as_str())), self.entries.len(),
             self.current_drive(), match self.focus { Focus::App(i) => format!("app{i}"), f => format!("{f:?}").to_lowercase() }, menu, self.menu.map_or(0, |m| m.item), dialog.replace(['(', ')'], "_"),
             if self.mode == Mode::Dark { "dark" } else { "light" }, format!("{:?}", self.sort).to_lowercase(), self.show_hidden,
-            if self.stacked { "stacked" } else { "side" }, self.details,
+            if self.stacked { "stacked" } else { "side" }, self.details, self.drives.iter().map(|d| d.label.replace(' ', "_")).collect::<Vec<_>>().join(","),
         )
     }
 }

@@ -84,3 +84,17 @@ Reading these honestly:
 - **The live install image needs more than 512 MB of RAM**: the boot image is now 154 MB compressed and 180 MB
   unpacked, and a 512 MB machine panics with "Unable to mount root fs". A 1 GB VM is fine. Making the installer
   image smaller (load the system from the disc instead of unpacking it all into RAM) is planned.
+
+### M6 features (CI run for commit 0692064)
+
+Same setup as M3 (GitHub runner with KVM, QEMU q35, 1 GB RAM for the installed-system scenario, BIOS and UEFI).
+
+| | BIOS |
+|---|---|
+| **Installed system**, kernel clock at the login screen | 2.35 s |
+| **Installed system**, QEMU start to login screen | 3.11 s |
+| **Installed system**, memory used at the login screen (15 s after) | 151,180 kB |
+| Live image kernel clock at the first screen | 1.94 s |
+
+The new features did not change idle memory or boot time noticeably (they run only when used; the helper's
+USB check costs one look at /sys every two seconds). Still **no comparison with Debian yet**.
