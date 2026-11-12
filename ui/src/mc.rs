@@ -139,6 +139,21 @@ pub fn java_package(major: u32) -> Result<String, String> {
     match major { 8 => Ok("openjdk8-jre-base".into()), 11 | 17 | 21 | 25 => Ok(format!("openjdk{major}-jre-headless")), n => Err(format!("This version needs Java {n}, which is not available here.")) }
 }
 
+/// Where Eclipse Temurin publishes its Java builds (used when Alpine's own packages do not have that Java yet).
+pub fn adoptium_api(major: u32) -> String { format!("https://api.adoptium.net/v3/assets/latest/{major}/hotspot?architecture=x64&image_type=jre&os=alpine-linux") }
+
+pub fn allowed_java_url(u: &str) -> bool { (u.starts_with("https://api.adoptium.net/") || u.starts_with("https://github.com/adoptium/")) && !u.contains(char::is_whitespace) && !u.contains("..") }
+
+/// (download address, sha256) of the newest Temurin JRE of that major version.
+pub fn parse_adoptium(text: &str) -> Result<(String, String), String> {
+    let j = parse_json(text)?;
+    let pkg = j.arr().and_then(|a| a.first()).and_then(|a| a.get("binary")).and_then(|b| b.get("package")).ok_or("No Java of that version is published for this system.")?;
+    let link = pkg.get("link").and_then(Json::str).ok_or("no download address")?.to_string();
+    let sum = pkg.get("checksum").and_then(Json::str).ok_or("no checksum")?.to_lowercase();
+    if sum.len() != 64 || !sum.chars().all(|c| c.is_ascii_hexdigit()) { return Err("the Java checksum is not valid".into()); }
+    Ok((link, sum))
+}
+
 pub fn valid_version_id(v: &str) -> bool { !v.is_empty() && v.len() <= 40 && v.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) }
 
 /// 2, 4 or 8 GB, and only if the computer has room for it (a bit more than the heap is used in total).
@@ -172,6 +187,43 @@ pub fn versions(ctx: &Ctx) -> Result<String, String> {
     Ok(out)
 }
 
+/// The path of a `java` program of the wanted major version, installing it first if needed: from Alpine's packages when they have it,
+/// otherwise Eclipse Temurin's own build, downloaded, checked against its published checksum and unpacked on its own under /opt.
+pub fn ensure_java(ctx: &Ctx, major: u32) -> Result<String, String> {
+    let rel = |p: &Path| p.to_string_lossy().trim_start_matches(&*ctx.root.to_string_lossy()).to_string();
+    let find = || [if major == 8 { "java-1.8-openjdk".to_string() } else { format!("java-{major}-openjdk") }].iter().map(|d| ctx.root.join("usr/lib/jvm").join(d).join("bin/java")).chain(Some(ctx.root.join(format!("opt/java-{major}/bin/java")))).find(|p| p.exists());
+    if let Ok(pkg) = java_package(major) {
+        let (code, _) = ctx.runner.run("apk", &["add", "--no-progress", &pkg]);
+        if code == 0 { if let Some(p) = find() { return Ok(rel(&p)); } }
+    }
+    if let Some(p) = ctx.root.join(format!("opt/java-{major}/bin/java")).exists().then(|| ctx.root.join(format!("opt/java-{major}/bin/java"))) { return Ok(rel(&p)); }
+    // Alpine has no such Java: use Temurin's build.
+    let api = tmp_file(ctx, "java-api.json");
+    let url = adoptium_api(major);
+    if !allowed_java_url(&url) { return Err("internal error: bad Java address".into()); }
+    if let Some(p) = api.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
+    let (code, out) = ctx.runner.run("wget", &["-q", "-T", "60", "-O", &api.to_string_lossy(), "--", &url]);
+    if code != 0 { return Err(format!("Java {major} is not in Alpine's packages and the download of its list failed: {}", out.trim())); }
+    let (link, sum) = parse_adoptium(&std::fs::read_to_string(&api).map_err(|e| e.to_string())?)?;
+    let _ = std::fs::remove_file(&api);
+    if !allowed_java_url(&link) { return Err("The Java download address is not on Temurin's servers.".into()); }
+    ctx.runner.run("apk", &["add", "--no-progress", "libstdc++", "libgcc", "zlib"]);
+    let tgz = ctx.root.join(format!("opt/java-{major}.tar.gz"));
+    let dest = ctx.root.join(format!("opt/java-{major}"));
+    std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    let (code, out) = ctx.runner.run("wget", &["-q", "-T", "300", "-O", &tgz.to_string_lossy(), "--", &link]);
+    if code != 0 { let _ = std::fs::remove_dir_all(&dest); let _ = std::fs::remove_file(&tgz); return Err(format!("The Java download failed: {}", out.trim())); }
+    let (code, out) = ctx.runner.run("sha256sum", &[&tgz.to_string_lossy()]);
+    if code != 0 || out.split_whitespace().next().map(str::to_lowercase).as_deref() != Some(sum.as_str()) {
+        let _ = std::fs::remove_dir_all(&dest); let _ = std::fs::remove_file(&tgz);
+        return Err("The downloaded Java is damaged (its checksum does not match). Nothing was installed; try again.".into());
+    }
+    let (code, out) = ctx.runner.run("tar", &["-xzf", &tgz.to_string_lossy(), "-C", &dest.to_string_lossy(), "--strip-components=1"]);
+    let _ = std::fs::remove_file(&tgz);
+    if code != 0 || !dest.join("bin/java").exists() { let _ = std::fs::remove_dir_all(&dest); return Err(format!("Unpacking Java failed: {}", out.trim())); }
+    Ok(rel(&dest.join("bin/java")))
+}
+
 pub struct Create<'a> { pub name: &'a str, pub version: &'a str, pub ram_gb: u32, pub eula: bool, pub user: &'a str }
 
 /// Download the server, install its Java and define (and, with the EULA accepted, start) the service.
@@ -193,11 +245,7 @@ pub fn create(ctx: &Ctx, c: &Create) -> Result<String, String> {
     fetch(ctx, &v.url, &vf)?;
     let info = parse_version(&std::fs::read_to_string(&vf).map_err(|e| e.to_string())?)?;
     let _ = std::fs::remove_file(&vf);
-    let pkg = java_package(info.java)?;
-
-    let (code, out) = ctx.runner.run("apk", &["add", "--no-progress", &pkg]);
-    if code != 0 { return Err(format!("Installing Java failed: {}", out.lines().last().unwrap_or("").trim())); }
-    let java = ["java-1.8-openjdk", &format!("java-{}-openjdk", info.java)].iter().map(|d| ctx.root.join("usr/lib/jvm").join(d).join("bin/java")).find(|p| p.exists()).map_or("java".to_string(), |p| p.to_string_lossy().trim_start_matches(&*ctx.root.to_string_lossy()).to_string());
+    let java = ensure_java(ctx, info.java)?;
 
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let jar = dir.join("server.jar");
@@ -281,18 +329,24 @@ mod tests {
     }
 
     /// A fake world: wget serves canned files, sha1sum answers, everything else succeeds.
-    struct Fake { calls: RefCell<Vec<String>>, sha: String }
+    struct Fake { calls: RefCell<Vec<String>>, sha: String, java: u32, alpine_has_java: bool, java_sha: String }
+    fn fake(sha: &str) -> Fake { Fake { calls: RefCell::new(vec![]), sha: sha.into(), java: 21, alpine_has_java: true, java_sha: "a".repeat(64) } }
     impl Runner for Fake {
         fn run(&self, c: &str, a: &[&str]) -> (i32, String) {
             self.calls.borrow_mut().push(format!("{c} {}", a.join(" ")));
             match c {
                 "wget" => {
                     let (to, url) = (a[a.iter().position(|x| *x == "-O").unwrap() + 1], *a.last().unwrap());
-                    let body = if url == MANIFEST_URL { MANIFEST.to_string() } else if url.contains("1.21.5.json") { VERSION.to_string() } else { "JAR".to_string() };
+                    let body = if url == MANIFEST_URL { MANIFEST.to_string() }
+                        else if url.contains("1.21.5.json") { VERSION.replace("\"majorVersion\":21", &format!("\"majorVersion\":{}", self.java)) }
+                        else if url.contains("api.adoptium.net") { format!(r#"[{{"binary":{{"package":{{"link":"https://github.com/adoptium/temurin25-binaries/releases/download/x/jre.tar.gz","checksum":"{}"}}}}}}]"#, "a".repeat(64)) }
+                        else { "JAR".to_string() };
                     std::fs::write(to, body).unwrap(); (0, String::new())
                 }
                 "sha1sum" => (0, format!("{}  {}\n", self.sha, a[0])),
-                "apk" => { let jvm = std::path::Path::new(&self.calls.borrow()[0]).to_path_buf(); let _ = jvm; (0, "OK".into()) }
+                "sha256sum" => (0, format!("{}  {}\n", self.java_sha, a[0])),
+                "tar" => { let dest = a[a.iter().position(|x| *x == "-C").unwrap() + 1]; std::fs::create_dir_all(format!("{dest}/bin")).unwrap(); std::fs::write(format!("{dest}/bin/java"), "").unwrap(); (0, String::new()) }
+                "apk" => if !self.alpine_has_java && a.iter().any(|x| x.starts_with("openjdk")) { (1, "ERROR: unable to select packages".into()) } else { (0, "OK".into()) },
                 _ => (0, String::new()),
             }
         }
@@ -314,7 +368,7 @@ mod tests {
 
     #[test]
     fn creating_a_server_downloads_checks_and_defines_a_service() {
-        let r = world("ok", 16_000_000); let f = Fake { calls: RefCell::new(vec![]), sha: GOOD_SHA.into() }; let ctx = Ctx { root: &r, runner: &f };
+        let r = world("ok", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
         let msg = create(&ctx, &Create { name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap();
         assert!(msg.contains("starting"), "{msg}");
         assert_eq!(std::fs::read_to_string(r.join("srv/minecraft/mc/eula.txt")).unwrap().lines().last(), Some("eula=true"));
@@ -327,8 +381,36 @@ mod tests {
     }
 
     #[test]
+    fn a_java_alpine_does_not_have_is_downloaded_from_temurin_and_checked() {
+        let r = world("temurin", 16_000_000); let mut f = fake(GOOD_SHA); f.java = 25; f.alpine_has_java = false;
+        let ctx = Ctx { root: &r, runner: &f };
+        create(&ctx, &Create { name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap();
+        let conf = std::fs::read_to_string(r.join("etc/exec85/services/mc.conf")).unwrap();
+        assert!(conf.contains("/opt/java-25/bin/java -Xmx4G"), "{conf}");
+        let calls = f.calls.borrow().join("\n");
+        assert!(calls.contains("api.adoptium.net/v3/assets/latest/25/") && calls.contains("sha256sum") && calls.contains("tar -xzf"), "{calls}");
+        assert!(!r.join("opt/java-25.tar.gz").exists(), "the download is removed after unpacking");
+        let _ = std::fs::remove_dir_all(&r);
+        // a damaged Java download installs nothing
+        let r = world("temurin-bad", 16_000_000); let mut f = fake(GOOD_SHA); f.java = 25; f.alpine_has_java = false; f.java_sha = "b".repeat(64);
+        let e = create(&Ctx { root: &r, runner: &f }, &Create { name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap_err();
+        assert!(e.contains("damaged") && !r.join("opt/java-25").exists() && !r.join("srv/minecraft/mc").exists(), "{e}");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn temurin_answers_and_addresses_are_checked() {
+        let good = format!(r#"[{{"binary":{{"package":{{"link":"https://github.com/adoptium/x/a.tar.gz","checksum":"{}"}}}}}}]"#, "c".repeat(64));
+        assert_eq!(parse_adoptium(&good).unwrap().1, "c".repeat(64));
+        assert!(parse_adoptium("[]").is_err() && parse_adoptium("{}").is_err());
+        assert!(parse_adoptium(&good.replace(&"c".repeat(64), "short")).is_err());
+        assert!(allowed_java_url("https://github.com/adoptium/temurin25-binaries/x") && allowed_java_url(&adoptium_api(25)));
+        for bad in ["https://github.com/evil/x", "http://api.adoptium.net/x", "https://api.adoptium.net.evil.example/x", "https://github.com/adoptium/../x"] { assert!(!allowed_java_url(bad), "{bad}"); }
+    }
+
+    #[test]
     fn without_the_eula_nothing_is_started() {
-        let r = world("noeula", 16_000_000); let f = Fake { calls: RefCell::new(vec![]), sha: GOOD_SHA.into() }; let ctx = Ctx { root: &r, runner: &f };
+        let r = world("noeula", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
         let msg = create(&ctx, &Create { name: "mc", version: "1.21.5", ram_gb: 2, eula: false, user: "tester" }).unwrap();
         assert!(msg.contains("EULA"), "{msg}");
         assert!(std::fs::read_to_string(r.join("srv/minecraft/mc/eula.txt")).unwrap().ends_with("eula=false\n"));
@@ -339,7 +421,7 @@ mod tests {
 
     #[test]
     fn a_damaged_download_installs_nothing() {
-        let r = world("bad", 16_000_000); let f = Fake { calls: RefCell::new(vec![]), sha: "f".repeat(40) }; let ctx = Ctx { root: &r, runner: &f };
+        let r = world("bad", 16_000_000); let f = fake(&"f".repeat(40)); let ctx = Ctx { root: &r, runner: &f };
         let e = create(&ctx, &Create { name: "mc", version: "1.21.5", ram_gb: 2, eula: true, user: "tester" }).unwrap_err();
         assert!(e.contains("damaged"), "{e}");
         assert!(!r.join("srv/minecraft/mc").exists() && !r.join("etc/exec85/services/mc.conf").exists());
@@ -348,7 +430,7 @@ mod tests {
 
     #[test]
     fn bad_requests_are_refused_before_anything_is_downloaded() {
-        let r = world("refuse", 3_000_000); let f = Fake { calls: RefCell::new(vec![]), sha: GOOD_SHA.into() }; let ctx = Ctx { root: &r, runner: &f };
+        let r = world("refuse", 3_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
         let mk = |n: &'static str, v: &'static str, ram, u: &'static str| Create { name: n, version: v, ram_gb: ram, eula: true, user: u };
         assert!(create(&ctx, &mk("mc", "1.21.5", 8, "tester")).unwrap_err().contains("enough memory"), "8 GB does not fit a 3 GB computer");
         assert!(create(&ctx, &mk("mc", "1.21.5", 3, "tester")).is_err(), "only 2, 4 or 8");
@@ -361,7 +443,7 @@ mod tests {
 
     #[test]
     fn the_version_list_shows_releases_newest_first() {
-        let r = world("list", 8_000_000); let f = Fake { calls: RefCell::new(vec![]), sha: GOOD_SHA.into() }; let ctx = Ctx { root: &r, runner: &f };
+        let r = world("list", 8_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
         assert_eq!(versions(&ctx).unwrap(), "latest 1.21.5\nrelease 1.21.5\nrelease 1.8.9\n");
         let _ = std::fs::remove_dir_all(&r);
     }
