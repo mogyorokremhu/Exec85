@@ -340,7 +340,11 @@ pub fn serve() -> ! {
 /// `exec85 --svc ...` and `exec85 --pkg ...`: the same actions as the apps, from a terminal.
 pub fn cli(args: &[String]) -> i32 {
     let sub: Vec<&str> = args.iter().map(String::as_str).collect();
-    let show = |r: Result<String, String>| match r { Ok(s) => { if !s.is_empty() { println!("{}", s.trim_end()); } 0 } Err(e) => { eprintln!("error: {e}"); 1 } };
+    // Output goes through write!, not println!: when the reader stops early (`... | head -1`) that is not an error worth crashing for.
+    let show = |r: Result<String, String>| match r {
+        Ok(s) => { if !s.is_empty() { let _ = writeln!(std::io::stdout(), "{}", s.trim_end()); } 0 }
+        Err(e) => { let _ = writeln!(std::io::stderr(), "error: {e}"); 1 }
+    };
     match sub.as_slice() {
         ["--svc", "add", name, rest @ ..] => {
             let mut d = ServiceDef { name: name.to_string(), user: std::env::var("USER").unwrap_or_default(), autostart: true, ..Default::default() };
@@ -352,7 +356,7 @@ pub fn cli(args: &[String]) -> i32 {
                     "--env" if i + 1 < rest.len() => { if let Some((k, v)) = rest[i + 1].split_once('=') { d.env.push((k.into(), v.into())); } i += 2; }
                     "--no-autostart" => { d.autostart = false; i += 1; }
                     "--" => { d.command = rest[i + 1..].iter().map(|w| if w.is_empty() || w.contains(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == '\\') { services::sh_quote(w) } else { w.to_string() }).collect::<Vec<_>>().join(" "); break; }
-                    other => { eprintln!("error: unexpected {other}; put the command after --"); return 2; }
+                    other => { let _ = writeln!(std::io::stderr(), "error: unexpected {other}; put the command after --"); return 2; }
                 }
             }
             show(call(&["svc-save", &services::render_conf(&d)]))
@@ -372,7 +376,7 @@ pub fn cli(args: &[String]) -> i32 {
         ["--pkg", "search", q] => show(call(&["apk-search", q])),
         ["--pkg", "update"] => show(call(&["apk-update"])),
         ["--pkg", "list"] => show(call(&["apk-installed"])),
-        _ => { eprintln!("usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions | create NAME VERSION 2|4|8 [--eula] [--user U]"); 2 }
+        _ => { let _ = writeln!(std::io::stderr(), "usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions | create NAME VERSION 2|4|8 [--eula] [--user U]"); 2 }
     }
 }
 
