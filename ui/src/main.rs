@@ -89,6 +89,17 @@ fn save_theme(m: Mode) {
     let _ = stdfs::write(path, text);
 }
 
+fn sleep_path() -> Option<PathBuf> { std::env::var_os("HOME").map(|h| Path::new(&h).join(".config/exec85/sleep")) }
+
+/// Minutes without a key before the screen turns off by itself (0 = never).
+fn read_sleep() -> u32 { sleep_path().and_then(|p| stdfs::read_to_string(p).ok()).and_then(|s| s.trim().parse().ok()).filter(|m| [0, 5, 15, 60].contains(m)).unwrap_or(0) }
+
+fn save_sleep(minutes: u32) {
+    let Some(path) = sleep_path() else { return };
+    if let Some(d) = path.parent() { let _ = stdfs::create_dir_all(d); }
+    let _ = stdfs::write(path, format!("{minutes}\n"));
+}
+
 struct Screen { display: display::Display, m: Metrics, canvas: Canvas }
 
 impl Screen {
@@ -228,6 +239,7 @@ fn stage_shell() -> ! {
     let wake_tx = tx.clone();
     let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || { let _ = wake_tx.send(Event::Wake); });
     let mut shell = shell::Shell::new(cols, rows, read_mode(), start, home, wake);
+    shell.app.sleep_minutes = read_sleep();
 
     ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m);
     s.show();
@@ -245,13 +257,17 @@ fn stage_shell() -> ! {
         }
         while let Ok(e) = rx.try_recv() { if let Event::Key(k) = e { effects.extend(shell.handle(k)); from_key = true; } }
         shell.tick();
-        ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m);
+        effects.extend(shell.take_effects());
+        // While asleep the screen shows nothing at all (and the display is switched off below).
+        if shell.app.asleep { let (w, h) = (s.canvas.w, s.canvas.h); s.canvas.fill_rect(0, 0, w, h, 0); } else { ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m); }
         s.show();
         let lines = if from_key { shell.state_lines(&extra) } else { shell.changed_state_lines(&extra) };
         for l in lines { log(&l); }
         for e in effects {
             match e {
                 Effect::SaveTheme(m) => save_theme(m),
+                Effect::SaveSleep(m) => save_sleep(m),
+                Effect::ScreenPower(on) => { let _ = helper::call(&["screen-power", if on { "on" } else { "off" }]); }
                 Effect::Logout => std::process::exit(supervisor::EXIT_LOGOUT),
                 Effect::PowerOff => std::process::exit(supervisor::EXIT_POWEROFF),
                 Effect::Reboot => std::process::exit(supervisor::EXIT_REBOOT),

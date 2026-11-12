@@ -27,13 +27,17 @@ pub struct Shell {
     home: PathBuf,
     last_state: String,
     last_drive_check: Instant,
+    last_activity: Instant,
+    sleep_unit: Duration,
+    /// Effects that arose from a timer rather than a key (the main loop collects them with `take_effects`).
+    pending: Vec<Effect>,
     /// Safely remove the drive mounted at the given path (replaced in tests).
     eject: Box<dyn Fn(&str) -> Result<String, String>>,
 }
 
 impl Shell {
     pub fn new(cols: usize, rows: usize, mode: Mode, start: PathBuf, home: PathBuf, wake: Arc<dyn Fn() + Send + Sync>) -> Shell {
-        Shell { app: App::new(cols, rows, mode, start), windows: Vec::new(), wake, home, last_state: String::new(), last_drive_check: Instant::now(), eject: Box::new(|m| crate::helper::call(&["usb-eject", m])) }
+        Shell { app: App::new(cols, rows, mode, start), windows: Vec::new(), wake, home, last_state: String::new(), last_drive_check: Instant::now(), last_activity: Instant::now(), sleep_unit: Duration::from_secs(60), pending: Vec::new(), eject: Box::new(|m| crate::helper::call(&["usb-eject", m])) }
     }
 
     fn env(&self) -> Env { Env { wake: self.wake.clone(), home: self.home.clone(), cwd: self.app.cwd.clone() } }
@@ -80,6 +84,12 @@ impl Shell {
 
     /// Handle one key. Returns the effects the outside world has to carry out.
     pub fn handle(&mut self, k: Key) -> Vec<Effect> {
+        self.last_activity = Instant::now();
+        if self.app.asleep {
+            // The first key only wakes the screen; it is not passed on to whatever was on it.
+            self.app.asleep = false;
+            return vec![Effect::ScreenPower(true)];
+        }
         let modal = self.app.dialog.is_some() || self.app.menu.is_some();
         if !modal {
             if let Focus::App(i) = self.app.focus {
@@ -99,11 +109,18 @@ impl Shell {
                 Effect::OpenFile(p) => self.open_file(p),
                 Effect::CloseWindow(i) => self.request_close(i),
                 Effect::Eject(m) => self.eject_drive(m),
+                Effect::Sleep => { self.app.asleep = true; outside.push(Effect::ScreenPower(false)); }
+                Effect::SaveSleep(m) => { self.last_activity = Instant::now(); outside.push(Effect::SaveSleep(m)); }
                 other => outside.push(other),
             }
         }
         outside
     }
+
+    /// How long without a key before the screen turns off by itself (tests can shorten it).
+    fn sleep_after(&self) -> Duration { self.sleep_unit * self.app.sleep_minutes }
+
+    pub fn take_effects(&mut self) -> Vec<Effect> { std::mem::take(&mut self.pending) }
 
     /// Unmount a pendrive. A folder window that is showing it first moves away, so it does not keep the drive busy.
     fn eject_drive(&mut self, mount: PathBuf) {
@@ -120,7 +137,8 @@ impl Shell {
     pub fn next_deadline(&self) -> Option<Duration> {
         let now = Instant::now();
         let drives = (self.last_drive_check + DRIVE_CHECK).saturating_duration_since(now);
-        Some(self.windows.iter().filter_map(|w| w.app.interval().map(|iv| (w.last_tick + iv).saturating_duration_since(now))).chain(Some(drives)).min().unwrap_or(drives))
+        let idle = if self.app.sleep_minutes > 0 && !self.app.asleep { Some((self.last_activity + self.sleep_after()).saturating_duration_since(now)) } else { None };
+        Some(self.windows.iter().filter_map(|w| w.app.interval().map(|iv| (w.last_tick + iv).saturating_duration_since(now))).chain(Some(drives)).chain(idle).min().unwrap_or(drives))
     }
 
     /// Run the ticks that are due. Returns true if anything ran (so the screen needs a redraw).
@@ -128,6 +146,7 @@ impl Shell {
         let now = Instant::now();
         let env = self.env();
         let mut ran = false;
+        if self.app.sleep_minutes > 0 && !self.app.asleep && now.duration_since(self.last_activity) >= self.sleep_after() { self.app.asleep = true; self.pending.push(Effect::ScreenPower(false)); ran = true; }
         if now.duration_since(self.last_drive_check) >= DRIVE_CHECK { self.last_drive_check = now; if self.app.refresh_drives() { ran = true; } }
         for w in self.windows.iter_mut() {
             if let Some(iv) = w.app.interval() {
@@ -153,7 +172,7 @@ impl Shell {
 
     /// The lines printed on the console after an event. The app line is only printed when it changed.
     pub fn state_lines(&mut self, extra: &str) -> Vec<String> {
-        let mut v = vec![format!("{} windows={}{}", self.app.state_line(), self.windows.len(), extra)];
+        let mut v = vec![format!("{} windows={} asleep={}{}", self.app.state_line(), self.windows.len(), self.app.asleep, extra)];
         if let Focus::App(i) = self.app.focus {
             if let Some(w) = self.windows.get(i) { v.push(format!("EXEC85_APP {}", w.app.state())); }
         }
@@ -199,6 +218,48 @@ mod tests {
         s.app.drive_cursor = s.app.drives.len() - 1;
         s.handle(parse_key("e").unwrap());
         assert_eq!(s.app.msg.as_deref(), Some("Something is still using the drive."));
+    }
+
+    #[test]
+    fn sleep_now_blanks_the_screen_and_the_next_key_only_wakes_it() {
+        let mut s = shell();
+        let before = s.app.sel;
+        let fx = press(&mut s, "f8");
+        assert!(s.app.asleep && fx == vec![Effect::ScreenPower(false)], "{fx:?}");
+        let fx = press(&mut s, "down");
+        assert!(!s.app.asleep && fx == vec![Effect::ScreenPower(true)], "{fx:?}");
+        assert_eq!(s.app.sel, before, "the waking key did not move the selection");
+        press(&mut s, "down");
+        assert!(s.app.sel >= before, "the next key works as usual");
+        assert!(s.state_lines("")[0].contains("asleep=false"));
+    }
+
+    #[test]
+    fn the_screen_sleeps_by_itself_after_the_chosen_time_and_apps_keep_running() {
+        let mut s = shell();
+        s.sleep_unit = Duration::from_millis(10);
+        press(&mut s, "alt-v");                                  // View menu
+        for _ in 0..7 { press(&mut s, "down"); }                // to "Sleep after 5 minutes" (separators are skipped)
+        let fx = press(&mut s, "ret");
+        assert_eq!(fx, vec![Effect::SaveSleep(5)], "the choice is saved");
+        assert_eq!(s.app.sleep_minutes, 5);
+        s.open(Kind::Clock);
+        assert!(s.next_deadline().unwrap() <= Duration::from_millis(60), "the main loop wakes up in time to blank the screen");
+        std::thread::sleep(Duration::from_millis(90));
+        assert!(s.tick() && s.app.asleep);
+        assert_eq!(s.take_effects(), vec![Effect::ScreenPower(false)]);
+        assert_eq!(s.windows.len(), 1, "windows stay open while the screen is off");
+        s.tick();
+        assert!(s.take_effects().is_empty(), "it only blanks once");
+        press(&mut s, "x");
+        assert!(!s.app.asleep);
+        // "never" turns it off again
+        press(&mut s, "alt-v");
+        for _ in 0..10 { press(&mut s, "down"); }
+        assert_eq!(press(&mut s, "ret"), vec![Effect::SaveSleep(0)]);
+        std::thread::sleep(Duration::from_millis(30));
+        s.tick();
+        assert!(!s.app.asleep, "never means never");
     }
 
     #[test]

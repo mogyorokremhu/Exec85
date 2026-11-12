@@ -575,6 +575,17 @@ def scenario_testing():
         d = svc_line(vm, "web", lambda d: d["status"] == "running" and d["pid"] not in ("-", pid1), 60, after=n)
         step("services: it comes back by itself with a new process", d is not None, f"old pid {pid1}")
         terminal_run(vm, "wget -q -O /dev/null http://127.0.0.1:8080/; echo HTTP2=$?", "HTTP2=0", 60, "services: the website answers again")
+
+        # ---- sleep mode: the screen goes black, the service keeps running, a key wakes it without being used ----
+        n = svc_count(vm, "web")
+        press(vm, "f8", asleep="true")
+        step("sleep: the screen is black", bar_pixel(vm.screenshot("t2-asleep")) == (0, 0, 0))
+        time.sleep(6)
+        last = [l for l in vm.text().splitlines() if "EXEC85_SVC name=web " in l][-1]
+        step("sleep: the web service keeps running while the screen is off", svc_count(vm, "web") == n and "status=running" in last, last)
+        press(vm, "ctrl-h", asleep="false", hidden="false")
+        step("sleep: a key wakes the screen", bar_pixel(vm.screenshot("t3-awake")) == DARK["bar"])
+        terminal_run(vm, "wget -q -O /dev/null http://127.0.0.1:8080/; echo HTTP3=$?", "HTTP3=0", 60, "sleep: the website still answers after waking")
         terminal_run(vm, "exec85 --svc add nginx --user root -- nginx -g 'daemon off;'; exec85 --svc start nginx; echo NG=$?", "NG=0", 60, "services: nginx defined and started")
         d = svc_line(vm, "nginx", lambda d: d["status"] == "running", 60)
         step("services: nginx is running", d is not None)

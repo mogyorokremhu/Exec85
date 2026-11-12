@@ -23,11 +23,12 @@ pub enum Act {
     Dark, Light, SortName, SortSize, SortDate, Hidden,
     NextPane, Stacked, Details,
     Keys, About, Sep,
+    Sleep, SleepIn(u32),
 }
 
 /// Things the shell asks the outside world (or the window manager) to do.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Effect { PowerOff, Reboot, Logout, SaveTheme(Mode), OpenApp(Kind), OpenFile(PathBuf), CloseWindow(usize), Eject(PathBuf) }
+pub enum Effect { PowerOff, Reboot, Logout, SaveTheme(Mode), OpenApp(Kind), OpenFile(PathBuf), CloseWindow(usize), Eject(PathBuf), Sleep, SaveSleep(u32), ScreenPower(bool) }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PromptKind { NewFile, NewFolder, Rename(String) }
@@ -54,6 +55,8 @@ pub const MENUS: [MenuDef; 5] = [
         it("Dark theme", "", Act::Dark), it("Light theme", "", Act::Light), it("", "", Act::Sep),
         it("Sort by name", "", Act::SortName), it("Sort by size", "", Act::SortSize), it("Sort by date", "", Act::SortDate),
         it("", "", Act::Sep), it("Show hidden files", "Ctrl+H", Act::Hidden),
+        it("", "", Act::Sep), it("Sleep now (screen off)", "F8", Act::Sleep),
+        it("Sleep after 5 minutes", "", Act::SleepIn(5)), it("Sleep after 15 minutes", "", Act::SleepIn(15)), it("Sleep after 60 minutes", "", Act::SleepIn(60)), it("Never sleep by itself", "", Act::SleepIn(0)),
     ]},
     MenuDef { title: "Apps", hot: 'a', items: &[
         it("Notepad", "", Act::OpenApp(Kind::Notepad)), it("Terminal (Cmd)", "", Act::OpenApp(Kind::Terminal)),
@@ -101,6 +104,9 @@ pub struct App {
     pub app_count: usize,
     /// Copied or cut item: (path, is_cut).
     pub clipboard: Option<(PathBuf, bool)>,
+    /// Minutes without a key before the screen turns off by itself (0 = never).
+    pub sleep_minutes: u32,
+    pub asleep: bool,
     /// One-line message for the status bar (errors, hints); cleared by the next key.
     pub msg: Option<String>,
 }
@@ -110,7 +116,7 @@ impl App {
         let mut a = App {
             cols, rows, mode, drives: fs::drives(), drive_cursor: 0, cwd: PathBuf::from("/"), entries: Vec::new(),
             sel: 0, top: 0, sort: Sort::Name, show_hidden: false, focus: Focus::Files, stacked: false, details: true,
-            menu: None, dialog: None, app_count: 0, clipboard: None, msg: None,
+            menu: None, dialog: None, app_count: 0, clipboard: None, sleep_minutes: 0, asleep: false, msg: None,
         };
         if !a.open_dir(start, None) { a.open_dir(PathBuf::from("/"), None); a.msg = None; }
         a
@@ -282,7 +288,7 @@ impl App {
 
     /// Keys that always belong to the shell, even when an app window has the focus.
     pub fn is_global(k: &Key) -> bool {
-        if matches!(k.code, code::F1 | code::F4 | code::F6 | code::F10) { return true; }
+        if matches!(k.code, code::F1 | code::F4 | code::F6 | code::F8 | code::F10) { return true; }
         k.alt && !k.ctrl && k.base_char().map_or(false, |c| MENUS.iter().any(|m| m.hot == c))
     }
 
@@ -330,6 +336,7 @@ impl App {
             Act::SortSize => self.sort == Sort::Size,
             Act::SortDate => self.sort == Sort::Date,
             Act::Hidden => self.show_hidden,
+            Act::SleepIn(m) => self.sleep_minutes == m,
             Act::Stacked => self.stacked,
             Act::Details => self.details,
             _ => return None,
@@ -374,6 +381,8 @@ impl App {
                 if !self.details && self.focus == Focus::Details { self.focus = Focus::Files; }
                 self.fix_scroll();
             }
+            Act::Sleep => return Some(Effect::Sleep),
+            Act::SleepIn(m) => { self.sleep_minutes = m; return Some(Effect::SaveSleep(m)); }
             Act::Keys => self.dialog = Some(Dialog::Keys),
             Act::About => self.dialog = Some(Dialog::About),
             Act::Sep => {}
@@ -421,6 +430,7 @@ impl App {
             code::F10 => { self.menu = Some(MenuState { menu: 0, item: first_item(0) }); return None; }
             code::F1 => return self.run(Act::Keys),
             code::F5 => return self.run(Act::Refresh),
+            code::F8 => return self.run(Act::Sleep),
             code::TAB if !matches!(self.focus, Focus::App(_)) => { self.next_pane(if k.shift { -1 } else { 1 }); return None; }
             _ => {}
         }

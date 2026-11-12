@@ -155,6 +155,13 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
             let mounts = std::fs::read_to_string(ctx.root.join("proc/mounts")).unwrap_or_default();
             crate::usb::eject(ctx.runner, &mounts, &ctx.root.join("run/exec85"), &ctx.root.join("media"), arg(1)?)
         }
+        "screen-power" => {
+            // Switch the display off or on (the monitor goes to sleep). Programs and services keep running.
+            let level = match arg(1)? { "off" => "4", "on" => "0", _ => return Err("Use on or off.".into()) };
+            let path = ctx.root.join("sys/class/graphics/fb0/blank");
+            std::fs::write(&path, level).map_err(|e| format!("cannot switch the screen: {e}"))?;
+            Ok(String::new())
+        }
         "mc-versions" => crate::mc::versions(ctx),
         "mc-create" => {
             let (name, version, ram, eula, user) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?);
@@ -529,6 +536,21 @@ mod tests {
         mk(52, 51, &["sleep-helper"]);
         assert_eq!(find_supervised_pid(&d, "exec85-ticker"), Some(51));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_screen_can_be_switched_off_and_on() {
+        let r = root("screen"); let f = Fake::new(); let c = Ctx { root: &r, runner: &f };
+        std::fs::create_dir_all(r.join("sys/class/graphics/fb0")).unwrap();
+        handle(&c, &w("screen-power off")).unwrap();
+        assert_eq!(std::fs::read_to_string(r.join("sys/class/graphics/fb0/blank")).unwrap(), "4");
+        handle(&c, &w("screen-power on")).unwrap();
+        assert_eq!(std::fs::read_to_string(r.join("sys/class/graphics/fb0/blank")).unwrap(), "0");
+        assert!(handle(&c, &w("screen-power maybe")).is_err() && handle(&c, &w("screen-power")).is_err());
+        let _ = std::fs::remove_dir_all(&r);
+        let r = root("noscreen"); let c = Ctx { root: &r, runner: &f };
+        assert!(handle(&c, &w("screen-power off")).unwrap_err().contains("cannot switch"), "a machine without that switch is reported, not a crash");
+        let _ = std::fs::remove_dir_all(&r);
     }
 
     #[test]
