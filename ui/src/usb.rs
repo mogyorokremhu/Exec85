@@ -28,14 +28,16 @@ pub fn detect(buf: &[u8], iso: bool) -> (Fs, String) {
     (Fs::Unknown, String::new())
 }
 
-pub fn read_signature(dev: &Path) -> (Fs, String) {
-    let Ok(mut f) = std::fs::File::open(dev) else { return (Fs::Unknown, String::new()) };
+/// None while the drive cannot be read yet (a USB stick needs a moment after it appears before its data can be read).
+pub fn read_signature(dev: &Path) -> Option<(Fs, String)> {
+    let mut f = std::fs::File::open(dev).ok()?;
     let mut buf = vec![0u8; 2048];
-    let n = f.read(&mut buf).unwrap_or(0);
+    let n = f.read(&mut buf).ok()?;
+    if n < 512 { return None; }
     buf.truncate(n);
     let mut cd = [0u8; 5];
     let iso = f.read_exact_at(&mut cd, 32769).is_ok() && &cd == b"CD001";
-    detect(&buf, iso)
+    Some(detect(&buf, iso))
 }
 
 /// A folder name for the drive: letters, digits, - _ . only.
@@ -86,11 +88,12 @@ pub struct Manager {
     pub state_dir: PathBuf,
     managed: HashMap<String, String>, // device name -> mount point
     failed: HashSet<String>,
+    not_ready: HashMap<String, u32>,
 }
 
 impl Manager {
     pub fn new(sys_block: &Path, dev_dir: &Path, media: &Path, state_dir: &Path) -> Manager {
-        Manager { sys_block: sys_block.into(), dev_dir: dev_dir.into(), media: media.into(), state_dir: state_dir.into(), managed: HashMap::new(), failed: HashSet::new() }
+        Manager { sys_block: sys_block.into(), dev_dir: dev_dir.into(), media: media.into(), state_dir: state_dir.into(), managed: HashMap::new(), failed: HashSet::new(), not_ready: HashMap::new() }
     }
 
     fn ejected_path(&self) -> PathBuf { self.state_dir.join("ejected") }
@@ -129,12 +132,19 @@ impl Manager {
         let still: Vec<&String> = ejected.iter().filter(|d| present.contains(*d)).collect();
         if still.len() != ejected.len() { let _ = std::fs::write(self.ejected_path(), still.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")); }
         self.failed.retain(|d| present.contains(d));
+        self.not_ready.retain(|d, _| present.contains(d));
 
         for dev in &present {
             if self.managed.contains_key(dev) || self.failed.contains(dev) || mounted.contains(dev) || ejected.contains(dev) { continue; }
             let node = self.dev_dir.join(dev);
             if !node.exists() { continue; } // the device file has not appeared yet; look again next time
-            let (fs, label) = read_signature(&node);
+            // A drive that was only just plugged in may not be readable for a few seconds: try again for up to 30 s before giving up.
+            let Some((fs, label)) = read_signature(&node) else {
+                let tries = self.not_ready.entry(dev.clone()).or_insert(0);
+                *tries += 1;
+                if *tries > 15 { self.failed.insert(dev.clone()); events.push(Event::Error(format!("cannot read {dev}"))); }
+                continue;
+            };
             let Some((typ, opts)) = mount_options(fs, uid, gid) else { self.failed.insert(dev.clone()); continue };
             let mount = self.unique_mount(&sanitize_label(&label, &format!("usb-{dev}")), dev);
             if std::fs::create_dir_all(&mount).is_err() { self.failed.insert(dev.clone()); events.push(Event::Error(format!("cannot create {}", mount.display()))); continue; }
@@ -290,6 +300,22 @@ mod tests {
         assert!(matches!(&ev[..], [Event::Error(e)] if e.contains("wrong fs type")), "{ev:?}");
         assert!(m.scan(&Bad, &HashSet::new(), 1, 1).is_empty());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_drive_that_is_not_readable_yet_is_retried_not_given_up_on() {
+        let (d, mut m) = world("late", &[]); // an empty device file: nothing to read yet
+        let f = Fake::new();
+        for _ in 0..5 { assert!(m.scan(&f, &HashSet::new(), 1, 1).is_empty()); }
+        std::fs::write(d.join("dev/sdb1"), fat32("LATE")).unwrap(); // now the stick is ready
+        let ev = m.scan(&f, &HashSet::new(), 1, 1);
+        assert!(matches!(&ev[..], [Event::Added { label, .. }] if label == "LATE"), "{ev:?}");
+        // a drive that never becomes readable is reported once, after a while
+        let (d2, mut m2) = world("never", &[]);
+        let mut all = Vec::new();
+        for _ in 0..40 { all.extend(m2.scan(&f, &HashSet::new(), 1, 1)); }
+        assert_eq!(all.len(), 1, "{all:?}");
+        let _ = std::fs::remove_dir_all(&d); let _ = std::fs::remove_dir_all(&d2);
     }
 
     #[test]
