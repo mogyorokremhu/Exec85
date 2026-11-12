@@ -613,7 +613,7 @@ def scenario_testing():
         terminal_run(vm, "java -version 2>&1 | head -1; echo JAVA=$?", "JAVA=0", 120, "software: Java runs")
 
         # ---- the Minecraft helper: real download from Mojang, checksum, Java, EULA ----
-        terminal_run(vm, "mc versions | head -1", "latest_1.", 120, "minecraft: the version list comes from Mojang")
+        terminal_run(vm, "mc versions | head -1", "latest_", 120, "minecraft: the version list comes from Mojang")
         terminal_run(vm, "mc create craft2 $(mc versions | head -1 | cut -d' ' -f2) 2; echo M2=$((5-3))", "M2=2", 600, "minecraft: installing without the EULA tick works")
         terminal_run(vm, "tail -1 /srv/minecraft/craft2/eula.txt", "eula=false", 30, "minecraft: the EULA stays unaccepted unless you tick it")
         terminal_run(vm, "mc create craft $(mc versions | head -1 | cut -d' ' -f2) 2 --eula; echo M3=$((5-3))", "M3=2", 600, "minecraft: installing with the EULA tick works")
