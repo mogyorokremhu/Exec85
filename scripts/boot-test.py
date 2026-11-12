@@ -532,7 +532,13 @@ def scenario_testing():
         step("usb: pulling the stick out afterwards is noticed", vm.wait_for(r"EXEC85_USB removed mount=", 60) is not None)
         time.sleep(3)
         reply = vm.monitor("device_add usb-storage,drive=usbd,id=usbdev2,bus=xhci.0")
-        print("device_add reply:", repr(reply), flush=True)
+        print("device_add reply:", repr(re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", reply)[-300:]), flush=True)
+        if vm.wait_for(r"EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB mount=\S+(?s:.*)EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB", 40) is None:
+            open_app(vm, 1)
+            for i, cmd in enumerate(["tail -2 /proc/partitions | tr -s ' ' '_'; echo DX1", "ls /sys/block | tr '\\n' ' '; echo DX2", "ls /dev | grep sd | tr '\\n' ' '; echo DX3", "grep media /proc/mounts | cut -c1-60; echo DX4"], 1):
+                try: terminal_run(vm, cmd, f"DX{i}", 20, "diagnostic")
+                except AssertionError: pass
+                print("DIAG>", i, app_line(vm, "terminal", 1), flush=True)
         step("usb: plugging it in again mounts it again", vm.wait_for(r"EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB mount=\S+(?s:.*)EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB", 90) is not None, "\n".join(l for l in vm.text().splitlines() if "EXEC85_USB" in l) + " | " + repr(reply))
 
         # ---- services and software, with nothing specific built in ----
