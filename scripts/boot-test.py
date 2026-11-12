@@ -411,6 +411,13 @@ def svc_line(vm, name, pred, timeout=60, after=0):
         time.sleep(0.5)
     return None
 
+def dump_file(vm, path, lines=4):
+    """Print the first lines of a file in the VM (diagnostics for a failed step)."""
+    for i in range(1, lines + 1):
+        try: terminal_run(vm, f"sed -n {i}p {path} | cut -c1-66; echo FD{i}", f"FD{i}", 20, "diagnostic")
+        except AssertionError: pass
+        print("FILE>", path, i, (app_line(vm, "terminal", 1) or {}).get("l1"), flush=True)
+
 def svc_count(vm, name): return sum(1 for l in vm.text().splitlines() if f"EXEC85_SVC name={name} " in l)
 
 def app_line(vm, name, timeout=STEP_TIMEOUT):
@@ -614,9 +621,12 @@ def scenario_testing():
 
         # ---- the Minecraft helper: real download from Mojang, checksum, Java, EULA ----
         terminal_run(vm, "mc versions | head -1", "latest_", 120, "minecraft: the version list comes from Mojang")
-        terminal_run(vm, "mc create craft2 $(mc versions | head -1 | cut -d' ' -f2) 2; echo M2=$((5-3))", "M2=2", 600, "minecraft: installing without the EULA tick works")
-        terminal_run(vm, "tail -1 /srv/minecraft/craft2/eula.txt", "eula=false", 30, "minecraft: the EULA stays unaccepted unless you tick it")
-        terminal_run(vm, "mc create craft $(mc versions | head -1 | cut -d' ' -f2) 2 --eula; echo M3=$((5-3))", "M3=2", 600, "minecraft: installing with the EULA tick works")
+        terminal_run(vm, "mc create craft2 $(mc versions | head -1 | cut -d' ' -f2) 2 > /tmp/m2.txt 2>&1; echo M2=$((5-3))", "M2=2", 900, "minecraft: the install command finishes")
+        try: terminal_run(vm, "tail -1 /srv/minecraft/craft2/eula.txt", "eula=false", 30, "minecraft: the EULA stays unaccepted unless you tick it")
+        except AssertionError:
+            dump_file(vm, "/tmp/m2.txt", 5)
+            raise
+        terminal_run(vm, "mc create craft $(mc versions | head -1 | cut -d' ' -f2) 2 --eula > /tmp/m3.txt 2>&1; echo M3=$((5-3))", "M3=2", 900, "minecraft: the install-with-EULA command finishes")
         d = svc_line(vm, "craft", lambda d: d["status"] == "running" and d["pid"] != "-", 120)
         step("minecraft: the server is running as a service", d is not None)
         terminal_run(vm, "svc log craft | grep -o 'minecraft server version [0-9.]*'", "re:minecraft_server_version_\\d", 120, "minecraft: the server program starts (Java and the downloaded jar work)")
