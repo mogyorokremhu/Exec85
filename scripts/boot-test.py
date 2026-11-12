@@ -542,6 +542,16 @@ def scenario_testing():
                 print("DIAG>", i, app_line(vm, "terminal", 1), flush=True)
         step("usb: plugging it in again mounts it again", vm.wait_for(r"EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB mount=\S+(?s:.*)EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB", 90) is not None, "\n".join(l for l in vm.text().splitlines() if "EXEC85_USB" in l) + " | " + repr(reply))
 
+        # ---- our own terminal commands ----
+        open_app(vm, 1)
+        terminal_run(vm, "help | head -1", "Exec85_commands", 30, "commands: help")
+        terminal_run(vm, "dir /etc | tail -1", "folders,", 30, "commands: dir")
+        terminal_run(vm, "disk | head -2 | tail -1", "free_of", 30, "commands: disk")
+        terminal_run(vm, "about | head -1", "Exec85_0.", 30, "commands: about")
+        terminal_run(vm, "get | head -1", "usage:_get", 30, "commands: get explains itself")
+        terminal_run(vm, "svc 2>&1 | head -1", "usage:_exec85", 30, "commands: svc is a short form of exec85 --svc")
+        press(vm, "f4")
+
         # ---- services and software, with nothing specific built in ----
         open_app(vm, 1)    # terminal
         step("services: the helper is running", vm.wait_for(r"EXEC85_HELPER ready", 30) is not None)

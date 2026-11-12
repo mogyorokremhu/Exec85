@@ -7,6 +7,7 @@
 mod account;
 mod app;
 mod apps;
+mod cmds;
 mod crypt;
 mod disks;
 mod display;
@@ -314,6 +315,20 @@ fn render_to_file(args: &[String]) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // Installed under another name (dir, disk, about, get ...), the program acts as that command.
+    if let Some(name) = args.first().and_then(|a| Path::new(a).file_name()).map(|n| n.to_string_lossy().into_owned()) {
+        if let Some(code) = cmds::run(&name, &args[1..]) { std::process::exit(code); }
+        // `svc` and `pkg` are short forms of `exec85 --svc` and `exec85 --pkg`.
+        if name == "svc" || name == "pkg" {
+            let mut a = vec![format!("--{name}")];
+            a.extend(args[1..].iter().cloned());
+            std::process::exit(helper::cli(&a));
+        }
+    }
+    if args.get(1).map(String::as_str) == Some("--cmd") {
+        if let Some(code) = args.get(2).and_then(|n| cmds::run(n, &args[3..])) { std::process::exit(code); }
+        eprintln!("unknown command; try: exec85 --cmd help"); std::process::exit(2);
+    }
     match args.get(1).map(String::as_str) {
         Some("--version") => println!("exec85 {}", env!("CARGO_PKG_VERSION")),
         Some("--ppm") => render_to_file(&args[1..]),

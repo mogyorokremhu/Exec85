@@ -65,6 +65,8 @@ du -sk "$R"/* "$R"/lib/modules/*/kernel/* 2>/dev/null | sort -rn | head -15
 rm -rf "${R:?}/boot" "${R:?}/var/cache/apk" "${R:?}/usr/share/man" "${R:?}/usr/share/apk"
 
 install -D -m 755 "$BIN" "$R/usr/bin/exec85"
+# Our own terminal commands are this same program under other names.
+for c in dir disk about get svc pkg; do ln -sf exec85 "$R/usr/bin/$c"; done
 cp -a "$SRC/image/overlay/." "$R/"
 mkdir -p "$R/proc" "$R/sys" "$R/dev" "$R/run" "$R/tmp" "$R/root"
 # OpenRC: only the 'default' runlevel is used for now (user services live there from milestone 5).
