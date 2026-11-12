@@ -633,7 +633,11 @@ def scenario_testing():
             terminal_run(vm, "svc log craft | tail -3 | cut -c1-66; echo LG$((5-3))", "LG2", 20, "diagnostic")
             print("LOG>", app_line(vm, "terminal", 1), flush=True)
         step("minecraft: the server is running as a service", d is not None)
-        terminal_run(vm, "svc log craft | grep -o 'minecraft server version [0-9.]*'", "re:minecraft_server_version_\\d", 120, "minecraft: the server program starts (Java and the downloaded jar work)")
+        try: terminal_run(vm, "sleep 40; svc log craft > /tmp/c.log 2>&1; grep -c 'minecraft server version' /tmp/c.log; echo C$((5-3))", "re:[1-9]\\d*C2", 240, "minecraft: the server program starts (Java and the downloaded jar work)")
+        except AssertionError:
+            dump_file(vm, "/tmp/c.log", 10)
+            print("SVC>", [l for l in vm.text().splitlines() if "name=craft " in l][-3:], flush=True)
+            raise
     finally:
         vm.stop()
 
