@@ -151,6 +151,10 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
             let (_c, out) = ctx.runner.run("apk", &["search", "-v", "--", q]);
             Ok(out.lines().take(200).collect::<Vec<_>>().join("\n"))
         }
+        "usb-eject" => {
+            let mounts = std::fs::read_to_string(ctx.root.join("proc/mounts")).unwrap_or_default();
+            crate::usb::eject(ctx.runner, &mounts, &ctx.root.join("run/exec85"), &ctx.root.join("media"), arg(1)?)
+        }
         "apk-installed" => { let (_c, out) = ctx.runner.run("apk", &["info", "-v"]); Ok(cap(out)) }
         "apk-update" => { let (c, out) = ctx.runner.run("apk", &["update"]); if c == 0 { Ok(cap(out)) } else { Err(cap(out)) } }
         "apk-upgrade" => { let (c, out) = ctx.runner.run("apk", &["upgrade", "--no-progress"]); if c == 0 { Ok(cap(out)) } else { Err(cap(out)) } }
@@ -291,6 +295,30 @@ fn report_loop() {
     }
 }
 
+/// Look for USB drives every two seconds: mount new ones under /media, unmount the ones that were pulled out.
+fn usb_watch() {
+    use crate::usb::{usb_partitions, Event, Manager};
+    let mut m = Manager::new(Path::new("/sys/block"), Path::new("/dev"), Path::new("/media"), Path::new(SOCK_DIR));
+    let r = SysRunner;
+    r.run("modprobe", &["-a", "vfat", "exfat", "ntfs3", "nls_cp437", "nls_utf8", "nls_iso8859-1"]);
+    loop {
+        let parts = usb_partitions(&m.sys_block);
+        if parts.iter().any(|p| !m.dev_dir.join(p).exists()) { r.run("mdev", &["-s"]); }
+        let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+        let mounted: std::collections::HashSet<String> = mounts.lines().filter_map(|l| l.split_whitespace().next()).filter_map(|d| d.strip_prefix("/dev/")).map(String::from).collect();
+        // Files on drives without owners (FAT, exFAT, NTFS) belong to the first regular user.
+        let (uid, gid) = account::regular_users(Path::new("/")).first().map_or((1000, 1000), |u| (u.uid, u.gid));
+        for e in m.scan(&r, &mounted, uid, gid) {
+            crate::supervisor::console_line(&match e {
+                Event::Added { dev, fs, label, mount } => format!("EXEC85_USB added dev={dev} fs={fs} label={} mount={mount}", if label.is_empty() { "-".to_string() } else { label.replace(' ', "_") }),
+                Event::Removed { mount } => format!("EXEC85_USB removed mount={mount}"),
+                Event::Error(e) => format!("EXEC85_USB error {}", e.replace(' ', "_")),
+            });
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
 pub fn serve() -> ! {
     let _ = std::fs::create_dir_all(SOCK_DIR);
     let _ = std::fs::remove_file(SOCK);
@@ -298,6 +326,7 @@ pub fn serve() -> ! {
     let _ = std::fs::set_permissions(SOCK, std::fs::Permissions::from_mode(0o666)); // everyone may connect; the peer check decides
     crate::supervisor::console_line("EXEC85_HELPER ready");
     std::thread::spawn(report_loop);
+    std::thread::spawn(usb_watch);
     for c in l.incoming().flatten() { std::thread::spawn(move || serve_one(c)); }
     std::process::exit(1)
 }
@@ -326,11 +355,12 @@ pub fn cli(args: &[String]) -> i32 {
         ["--svc", a @ ("start" | "stop" | "restart" | "status" | "get"), name] => show(call(&[&format!("svc-{a}"), name])),
         ["--svc", "remove", name] => show(call(&["svc-remove", name])),
         ["--svc", "log", name] => show(call(&["svc-log", name, "40"])),
+        ["--usb", "eject", mount] => show(call(&["usb-eject", mount])),
         ["--pkg", a @ ("add" | "del"), pkgs @ ..] if !pkgs.is_empty() => { let mut v = vec![format!("apk-{a}")]; v.extend(pkgs.iter().map(|p| p.to_string())); let r: Vec<&str> = v.iter().map(String::as_str).collect(); show(call(&r)) }
         ["--pkg", "search", q] => show(call(&["apk-search", q])),
         ["--pkg", "update"] => show(call(&["apk-update"])),
         ["--pkg", "list"] => show(call(&["apk-installed"])),
-        _ => { eprintln!("usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list"); 2 }
+        _ => { eprintln!("usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --usb eject MOUNTPOINT"); 2 }
     }
 }
 

@@ -69,7 +69,7 @@ def window_pixel(shot):   # blank cell inside the left window's bottom margin (s
 
 
 class VM:
-    def __init__(self, tag, cdrom=None, disk=None, mem=None):
+    def __init__(self, tag, cdrom=None, disk=None, mem=None, extra=()):
         self.tag = tag
         self.log = os.path.join(outdir, f"serial-{firmware}-{tag}.log")
         self.sock = os.path.join(outdir, f"mon-{firmware}-{tag}.sock")
@@ -77,6 +77,7 @@ class VM:
             if os.path.exists(p): os.remove(p)
         cmd = ["qemu-system-x86_64", "-machine", "q35", "-accel", accel, "-m", str(mem or MEM_MB), "-smp", "2", "-vga", "std", "-display", "none",
                "-no-reboot", "-serial", f"file:{self.log}", "-monitor", f"unix:{self.sock},server,nowait"]
+        cmd += list(extra)
         if cdrom: cmd += ["-cdrom", cdrom, "-boot", "d"]
         else: cmd += ["-boot", "c"]
         if disk: cmd += ["-drive", f"file={disk},format=raw,if=ide,cache=unsafe"]
@@ -223,7 +224,7 @@ def scenario_live():
         step("live: help dialog drawn", bar_pixel(vm.screenshot("6-help")) == DARK["bar"])
         press(vm, "esc", dialog="none")
         press(vm, "f10", menu="file")
-        press(vm, "up", item="15")
+        press(vm, "up", item="16")
         press(vm, "ret", dialog="confirm_poweroff_")
         press(vm, "n", dialog="none")
         # Log out goes back to the installer
@@ -341,7 +342,7 @@ def scenario_install():
         step("installed: the service is running", d is not None)
         press(vm, "f4")
         press(vm, "f10", menu="file")
-        press(vm, "up"); press(vm, "up", item="14")
+        press(vm, "up"); press(vm, "up", item="15")
         press(vm, "ret")
         vm.monitor("sendkey y")
         for _ in range(300):
@@ -443,7 +444,13 @@ def open_app(vm, index):
 
 def scenario_testing():
     I = "EXEC85_INSTALLER"
-    vm = VM("testing", cdrom=iso, mem=3072)   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
+    usb = os.path.join(outdir, "usb.img")
+    with open(os.path.join(outdir, "hello.txt"), "w") as f: f.write("hello from the pendrive\n")
+    with open(usb, "wb") as f: f.truncate(64 << 20)
+    subprocess.run(["mkfs.vfat", "-F", "32", "-n", "TESTUSB", usb], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["mcopy", "-i", usb, os.path.join(outdir, "hello.txt"), "::HELLO.TXT"], check=True)
+    # the USB controller and the stick's disk exist from the start; the stick itself is plugged in later with device_add
+    vm = VM("testing", cdrom=iso, mem=3072, extra=["-device", "qemu-xhci,id=xhci", "-drive", f"if=none,id=usbd,file={usb},format=raw"])   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
     try:
         step("testing: installer is up", vm.wait_for(r"EXEC85_SCREEN installer", 600 if SLOW else 120) is not None)
         press(vm, "ret", I, step="theme")
@@ -496,6 +503,33 @@ def scenario_testing():
             open_app(vm, i)
             press(vm, "f4")
         vm.screenshot("t1-shell")
+
+        # ---- pendrives: plug in, browse, write, eject, pull out ----
+        vm.monitor("device_add usb-storage,drive=usbd,id=usbdev,bus=xhci.0")
+        m = vm.wait_for(r"EXEC85_USB added dev=(\S+) fs=vfat label=TESTUSB mount=(\S+)", 90)
+        step("usb: the plugged-in pendrive is detected and mounted", m is not None, "\n".join(l for l in vm.text().splitlines() if "EXEC85_USB" in l))
+        mount = m[2]
+        d = vm.wait_line("EXEC85_STATE", lambda d: "TESTUSB" in d.get("drives", ""), 30)
+        step("usb: the Explorer shows it in the drive row", d is not None)
+        open_app(vm, 1)
+        terminal_run(vm, "cat /media/TESTUSB/HELLO.TXT", "hello_from", 30, "usb: a file on the pendrive can be read")
+        terminal_run(vm, "echo wr$((5-3))ten > /media/TESTUSB/new.txt; cat /media/TESTUSB/new.txt", "wr2ten", 30, "usb: a file can be written to the pendrive")
+        terminal_run(vm, "cp /media/TESTUSB/HELLO.TXT /tmp/copy.txt; ls -l /tmp/copy.txt | cut -c1-30; echo CP$((5-3))", "CP2", 30, "usb: a file can be copied off the pendrive")
+        terminal_run(vm, "rm /media/TESTUSB/new.txt; ls /media/TESTUSB; echo LS$((5-3))", "LS2", 30, "usb: a file on the pendrive can be deleted")
+        press(vm, "f4")
+        # eject from the Explorer: drive row, last drive, E
+        press(vm, "tab", focus="details"); press(vm, "tab", focus="drives"); press(vm, "end")
+        n = len(vm.lines("EXEC85_STATE"))
+        vm.monitor("sendkey e")
+        d = vm.wait_line("EXEC85_STATE", lambda d: "TESTUSB" not in d.get("drives", ""), 60, after=n)
+        step("usb: Eject unmounts the drive and removes it from the drive row", d is not None, str(vm.lines("EXEC85_STATE")[-1:]))
+        open_app(vm, 1)
+        terminal_run(vm, "ls /media; echo MD$((5-3))", "MD2", 30, "usb: the drive's folder is gone after eject")
+        press(vm, "f4")
+        vm.monitor("device_del usbdev")
+        step("usb: pulling the stick out afterwards is noticed", vm.wait_for(r"EXEC85_USB removed mount=", 60) is not None)
+        vm.monitor("device_add usb-storage,drive=usbd,id=usbdev2,bus=xhci.0")
+        step("usb: plugging it in again mounts it again", vm.wait_for(r"EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB mount=\S+(?s:.*)EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB", 90) is not None)
 
         # ---- services and software, with nothing specific built in ----
         open_app(vm, 1)    # terminal

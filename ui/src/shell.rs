@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const MAX_APPS: usize = 4;
+/// How often the drive row looks for a pendrive that was plugged in or pulled out.
+const DRIVE_CHECK: Duration = Duration::from_secs(2);
 
 pub struct AppWindow {
     pub app: Box<dyn Application>,
@@ -24,11 +26,14 @@ pub struct Shell {
     wake: Arc<dyn Fn() + Send + Sync>,
     home: PathBuf,
     last_state: String,
+    last_drive_check: Instant,
+    /// Safely remove the drive mounted at the given path (replaced in tests).
+    eject: Box<dyn Fn(&str) -> Result<String, String>>,
 }
 
 impl Shell {
     pub fn new(cols: usize, rows: usize, mode: Mode, start: PathBuf, home: PathBuf, wake: Arc<dyn Fn() + Send + Sync>) -> Shell {
-        Shell { app: App::new(cols, rows, mode, start), windows: Vec::new(), wake, home, last_state: String::new() }
+        Shell { app: App::new(cols, rows, mode, start), windows: Vec::new(), wake, home, last_state: String::new(), last_drive_check: Instant::now(), eject: Box::new(|m| crate::helper::call(&["usb-eject", m])) }
     }
 
     fn env(&self) -> Env { Env { wake: self.wake.clone(), home: self.home.clone(), cwd: self.app.cwd.clone() } }
@@ -93,10 +98,20 @@ impl Shell {
                 Effect::OpenApp(kind) => self.open(kind),
                 Effect::OpenFile(p) => self.open_file(p),
                 Effect::CloseWindow(i) => self.request_close(i),
+                Effect::Eject(m) => self.eject_drive(m),
                 other => outside.push(other),
             }
         }
         outside
+    }
+
+    /// Unmount a pendrive. A folder window that is showing it first moves away, so it does not keep the drive busy.
+    fn eject_drive(&mut self, mount: PathBuf) {
+        if self.app.cwd.starts_with(&mount) { self.app.open_dir(PathBuf::from("/"), None); }
+        let m = mount.to_string_lossy().into_owned();
+        let result = (self.eject)(&m);
+        self.app.refresh_drives();
+        self.app.msg = Some(match result { Ok(s) => s, Err(e) => e }); // after the refresh, so "Safe to remove." is what stays on screen
     }
 
     // ---- timers --------------------------------------------------------------------------------
@@ -104,7 +119,8 @@ impl Shell {
     /// How long the main loop may sleep before an app needs a tick (None = until the next key).
     pub fn next_deadline(&self) -> Option<Duration> {
         let now = Instant::now();
-        self.windows.iter().filter_map(|w| w.app.interval().map(|iv| (w.last_tick + iv).saturating_duration_since(now))).min()
+        let drives = (self.last_drive_check + DRIVE_CHECK).saturating_duration_since(now);
+        Some(self.windows.iter().filter_map(|w| w.app.interval().map(|iv| (w.last_tick + iv).saturating_duration_since(now))).chain(Some(drives)).min().unwrap_or(drives))
     }
 
     /// Run the ticks that are due. Returns true if anything ran (so the screen needs a redraw).
@@ -112,6 +128,7 @@ impl Shell {
         let now = Instant::now();
         let env = self.env();
         let mut ran = false;
+        if now.duration_since(self.last_drive_check) >= DRIVE_CHECK { self.last_drive_check = now; if self.app.refresh_drives() { ran = true; } }
         for w in self.windows.iter_mut() {
             if let Some(iv) = w.app.interval() {
                 if now.duration_since(w.last_tick) >= iv { w.app.tick(&env); w.last_tick = now; ran = true; }
@@ -160,6 +177,48 @@ mod tests {
     fn shell() -> Shell { Shell::new(100, 40, Mode::Dark, PathBuf::from("/"), std::env::temp_dir(), Arc::new(|| {})) }
     fn press(s: &mut Shell, keys: &str) -> Vec<Effect> {
         keys.split(',').filter(|x| !x.is_empty()).flat_map(|n| s.handle(parse_key(n).unwrap())).collect()
+    }
+
+    fn fake_drive(mount: &str) -> crate::fs::Drive { crate::fs::Drive { label: "STICK".into(), mount: PathBuf::from(mount), fstype: "vfat".into(), total: 1 << 30, free: 1 << 29 } }
+
+    #[test]
+    fn eject_moves_away_from_the_drive_and_reports_the_result() {
+        let mut s = shell();
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let seen2 = seen.clone();
+        s.eject = Box::new(move |m| { seen2.borrow_mut().push(m.to_string()); Ok("Safe to remove.".into()) });
+        s.app.drives.push(fake_drive("/media/STICK"));
+        s.app.focus = Focus::Drives;
+        s.app.drive_cursor = s.app.drives.len() - 1;
+        let fx = s.handle(parse_key("e").unwrap());
+        assert!(fx.is_empty(), "ejecting is handled inside the shell");
+        assert_eq!(*seen.borrow(), vec!["/media/STICK".to_string()]);
+        assert_eq!(s.app.msg.as_deref(), Some("Safe to remove."));
+        s.eject = Box::new(|_| Err("Something is still using the drive.".into()));
+        s.app.drives.push(fake_drive("/media/STICK"));
+        s.app.drive_cursor = s.app.drives.len() - 1;
+        s.handle(parse_key("e").unwrap());
+        assert_eq!(s.app.msg.as_deref(), Some("Something is still using the drive."));
+    }
+
+    #[test]
+    fn only_usb_drives_can_be_ejected() {
+        let mut s = shell();
+        s.app.focus = Focus::Drives;
+        s.app.drive_cursor = 0; // the root drive
+        press(&mut s, "e");
+        assert!(s.app.msg.as_deref().unwrap_or("").contains("cannot be ejected"), "{:?}", s.app.msg);
+    }
+
+    #[test]
+    fn the_drive_row_notices_changes() {
+        let mut s = shell();
+        assert!(!s.app.refresh_drives() || s.app.drives.len() >= 1);
+        let n = s.app.drives.len();
+        s.app.drives.push(fake_drive("/media/GONE"));
+        assert!(s.app.refresh_drives(), "a drive that vanished is noticed");
+        assert_eq!(s.app.drives.len(), n);
+        assert!(s.app.msg.as_deref().unwrap_or("").contains("removed"));
     }
 
     #[test]

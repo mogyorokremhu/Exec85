@@ -26,6 +26,7 @@ mod supervisor;
 mod helper;
 mod services;
 mod sys;
+mod usb;
 mod ui;
 
 use app::{App, Effect};
@@ -320,7 +321,7 @@ fn main() {
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
         Some("--helperd") => helper::serve(),
-        Some("--svc") | Some("--pkg") => std::process::exit(helper::cli(&args[1..])),
+        Some("--svc") | Some("--pkg") | Some("--usb") => std::process::exit(helper::cli(&args[1..])),
         None => supervisor::run(),
         Some(other) => { eprintln!("unknown option {other}; try --version"); std::process::exit(2); }
     }
