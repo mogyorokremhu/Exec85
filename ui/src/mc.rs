@@ -187,10 +187,13 @@ pub fn versions(ctx: &Ctx) -> Result<String, String> {
     Ok(out)
 }
 
+/// The path as the running system sees it: `p` lies under `root`, and the result always starts with `/` (also when `root` is `/` itself).
+pub fn absolute_in(root: &Path, p: &Path) -> String { format!("/{}", p.strip_prefix(root).unwrap_or(p).to_string_lossy().trim_start_matches('/')) }
+
 /// The path of a `java` program of the wanted major version, installing it first if needed: from Alpine's packages when they have it,
 /// otherwise Eclipse Temurin's own build, downloaded, checked against its published checksum and unpacked on its own under /opt.
 pub fn ensure_java(ctx: &Ctx, major: u32) -> Result<String, String> {
-    let rel = |p: &Path| p.to_string_lossy().trim_start_matches(&*ctx.root.to_string_lossy()).to_string();
+    let rel = |p: &Path| absolute_in(ctx.root, p);
     let find = || [if major == 8 { "java-1.8-openjdk".to_string() } else { format!("java-{major}-openjdk") }].iter().map(|d| ctx.root.join("usr/lib/jvm").join(d).join("bin/java")).chain(Some(ctx.root.join(format!("opt/java-{major}/bin/java")))).find(|p| p.exists());
     if let Ok(pkg) = java_package(major) {
         let (code, _) = ctx.runner.run("apk", &["add", "--no-progress", &pkg]);
@@ -396,6 +399,13 @@ mod tests {
         let e = create(&Ctx { root: &r, runner: &f }, &Create { name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap_err();
         assert!(e.contains("damaged") && !r.join("opt/java-25").exists() && !r.join("srv/minecraft/mc").exists(), "{e}");
         let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn paths_keep_their_leading_slash_even_when_the_root_is_slash() {
+        assert_eq!(absolute_in(Path::new("/"), Path::new("/opt/java-25/bin/java")), "/opt/java-25/bin/java");
+        assert_eq!(absolute_in(Path::new("/tmp/w"), Path::new("/tmp/w/opt/java-25/bin/java")), "/opt/java-25/bin/java");
+        assert_eq!(absolute_in(Path::new("/"), Path::new("/usr/lib/jvm/java-21-openjdk/bin/java")), "/usr/lib/jvm/java-21-openjdk/bin/java");
     }
 
     #[test]
