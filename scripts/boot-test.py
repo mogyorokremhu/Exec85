@@ -127,9 +127,11 @@ class VM:
                 time.sleep(0.1)
             self.mon = socket.socket(socket.AF_UNIX); self.mon.settimeout(10); self.mon.connect(self.sock); self.mon.recv(4096)
         self.mon.sendall((command + "\n").encode()); time.sleep(0.12)
-        try: self.mon.settimeout(0.2); self.mon.recv(65536)
+        reply = b""
+        try: self.mon.settimeout(0.2); reply = self.mon.recv(65536)
         except Exception: pass
         self.mon.settimeout(10)
+        return reply.decode(errors="replace")
 
     def screenshot(self, name):
         ppm = os.path.join(outdir, f"{firmware}-{name}.ppm")
@@ -528,8 +530,10 @@ def scenario_testing():
         press(vm, "f4")
         vm.monitor("device_del usbdev")
         step("usb: pulling the stick out afterwards is noticed", vm.wait_for(r"EXEC85_USB removed mount=", 60) is not None)
-        vm.monitor("device_add usb-storage,drive=usbd,id=usbdev2,bus=xhci.0")
-        step("usb: plugging it in again mounts it again", vm.wait_for(r"EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB mount=\S+(?s:.*)EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB", 90) is not None)
+        time.sleep(3)
+        reply = vm.monitor("device_add usb-storage,drive=usbd,id=usbdev2,bus=xhci.0")
+        print("device_add reply:", repr(reply), flush=True)
+        step("usb: plugging it in again mounts it again", vm.wait_for(r"EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB mount=\S+(?s:.*)EXEC85_USB added dev=\S+ fs=vfat label=TESTUSB", 90) is not None, "\n".join(l for l in vm.text().splitlines() if "EXEC85_USB" in l) + " | " + repr(reply))
 
         # ---- services and software, with nothing specific built in ----
         open_app(vm, 1)    # terminal
