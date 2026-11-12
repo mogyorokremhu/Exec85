@@ -326,7 +326,12 @@ fn usb_watch() {
     }
 }
 
+extern "C" { fn umask(mask: u32) -> u32; }
+
 pub fn serve() -> ! {
+    // Folders the helper creates (for Java, for servers) must be enterable by the users that run programs from them.
+    // SAFETY: umask only changes this process's default file permissions.
+    unsafe { umask(0o022); }
     let _ = std::fs::create_dir_all(SOCK_DIR);
     let _ = std::fs::remove_file(SOCK);
     let l = match UnixListener::bind(SOCK) { Ok(l) => l, Err(e) => { crate::supervisor::console_line(&format!("EXEC85_HELPER cannot listen: {e}")); std::process::exit(1) } };

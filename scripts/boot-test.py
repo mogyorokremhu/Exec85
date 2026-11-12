@@ -411,9 +411,9 @@ def svc_line(vm, name, pred, timeout=60, after=0):
         time.sleep(0.5)
     return None
 
-def dump_file(vm, path, lines=4):
-    """Print the first lines of a file in the VM (diagnostics for a failed step)."""
-    for i in range(1, lines + 1):
+def dump_file(vm, path, lines=4, start=1):
+    """Print lines of a file in the VM (diagnostics for a failed step)."""
+    for i in range(start, lines + 1):
         try: terminal_run(vm, f"sed -n {i}p {path} | cut -c1-66; echo FD{i}", f"FD{i}", 20, "diagnostic")
         except AssertionError: pass
         print("FILE>", path, i, (app_line(vm, "terminal", 1) or {}).get("l1"), flush=True)
@@ -629,7 +629,7 @@ def scenario_testing():
         terminal_run(vm, "mc create craft $(mc versions | head -1 | cut -d' ' -f2) 2 --eula > /tmp/m3.txt 2>&1; echo M3=$((5-3))", "M3=2", 900, "minecraft: the install-with-EULA command finishes")
         d = svc_line(vm, "craft", lambda d: d["status"] == "running" and d["pid"] != "-", 120)
         if d is None:
-            dump_file(vm, "/tmp/m3.txt", 5)
+            dump_file(vm, "/tmp/m3.txt", 14, 6)
             terminal_run(vm, "svc log craft | tail -3 | cut -c1-66; echo LG$((5-3))", "LG2", 20, "diagnostic")
             print("LOG>", app_line(vm, "terminal", 1), flush=True)
         step("minecraft: the server is running as a service", d is not None)
