@@ -628,6 +628,15 @@ def scenario_testing():
         r = subprocess.run(["ssh", "-p", "2222", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "BatchMode=yes", "-o", "PreferredAuthentications=password", "-o", "PubkeyAuthentication=no", "-o", "ConnectTimeout=8", "tester@127.0.0.1", "echo", "BAD"], capture_output=True, text=True)
         step("ssh: a password login is refused", "BAD" not in r.stdout and "Permission denied" in r.stderr, (r.stdout + r.stderr)[-300:])
 
+        # ---- network settings: a fixed address and back to automatic, with the network still working each time ----
+        terminal_run(vm, "exec85 --net set eth0 static 10.0.2.15/24 10.0.2.2 10.0.2.3 > /tmp/n.txt 2>&1; echo N1$((5-3))", "N12", 90, "network: a fixed address is applied")
+        terminal_run(vm, "ip route | head -1 | cut -c1-30", "default_via_10.0.2.2", 30, "network: the gateway is the one that was chosen")
+        terminal_run(vm, "head -1 /etc/resolv.conf", "nameserver_10.0.2.3", 30, "network: the name server is the one that was chosen")
+        terminal_run(vm, "wget -q -O /dev/null https://piston-meta.mojang.com/mc/game/version_manifest_v2.json; echo NW$?", "NW0", 90, "network: names and the internet still work with the fixed address")
+        terminal_run(vm, "exec85 --net set eth0 dhcp > /tmp/n2.txt 2>&1; echo N2$((5-3))", "N22", 90, "network: back to an automatic address")
+        terminal_run(vm, "ip addr show eth0 | grep -c 'inet 10.0.2.15'; echo A$((5-3))", "re:[1-9]A2", 60, "network: the automatic address is back")
+        terminal_run(vm, "wget -q -O /dev/null https://piston-meta.mojang.com/mc/game/version_manifest_v2.json; echo NX$?", "NX0", 90, "network: and the internet works again")
+
         # ---- sleep mode: the screen goes black, the service keeps running, a key wakes it without being used ----
         n = svc_count(vm, "web")
         press(vm, "f8", asleep="true")
