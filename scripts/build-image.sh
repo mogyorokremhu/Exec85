@@ -7,7 +7,7 @@ SRC=${SRC:-/src}
 OUT=${OUT:-/out}
 W=/work
 # "exec85.live" tells Exec85 it is running from the install image (so: show the installer).
-CMDLINE=${KERNEL_CMDLINE:-"console=tty0 console=ttyS0,115200 rdinit=/sbin/init loglevel=3 exec85.live"}
+CMDLINE=${KERNEL_CMDLINE:-"console=tty0 console=ttyS0,115200 rdinit=/sbin/init quiet loglevel=3 vt.global_cursor_default=0 exec85.live"}
 
 echo "==> installing build tools"
 apk add --no-cache rust cargo build-base xorriso kmod cpio gzip >/dev/null

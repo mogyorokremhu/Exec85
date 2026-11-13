@@ -115,7 +115,20 @@ fn keep_helper_running(exe: PathBuf) {
     });
 }
 
+/// Stop the boot screen (if it is showing) so the first real screen can have the display to itself.
+pub fn stop_splash() {
+    let Some(pid) = std::fs::read_to_string("/run/exec85-splash.pid").ok().and_then(|s| s.trim().parse::<i32>().ok()) else { return };
+    let _ = sys::send_signal(pid, 15);
+    for _ in 0..40 {
+        if !Path::new(&format!("/proc/{pid}")).exists() { break; }
+        thread::sleep(Duration::from_millis(25));
+    }
+    if Path::new(&format!("/proc/{pid}")).exists() { let _ = sys::send_signal(pid, 9); }
+    let _ = std::fs::remove_file("/run/exec85-splash.pid");
+}
+
 pub fn run() -> ! {
+    stop_splash();
     let exe = exe_path();
     keep_helper_running(exe.clone());
     let live = cmdline_has("exec85.live");

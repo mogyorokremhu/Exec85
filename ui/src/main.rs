@@ -24,6 +24,7 @@ mod login;
 mod mc;
 mod paint;
 mod shell;
+mod splash;
 mod supervisor;
 mod helper;
 mod services;
@@ -181,6 +182,19 @@ fn stage_login() -> ! {
 
 enum Event { Key(Key), Wake }
 
+/// The boot screen, shown from early in the boot until the first real screen takes over (the supervisor stops it).
+fn stage_splash() -> ! {
+    let _ = stdfs::write("/run/exec85-splash.pid", std::process::id().to_string());
+    let mut s = Screen::open();
+    log("EXEC85_SPLASH shown");
+    let start = std::time::Instant::now();
+    loop {
+        splash::render(&mut s.canvas, start.elapsed().as_secs_f64(), None, env!("CARGO_PKG_VERSION"));
+        s.show();
+        thread::sleep(Duration::from_millis(66));
+    }
+}
+
 fn stage_installer() -> ! {
     load_layout();
     let mut s = Screen::open();
@@ -314,6 +328,7 @@ fn render_to_file(args: &[String]) {
             for k in parsed { inst.handle(k); }
             installer::draw(&inst, &mut c, &m);
         }
+        "splash" => { splash::render(&mut c, 2.0, Some(0.6), env!("CARGO_PKG_VERSION")); }
         "login" => {
             let mut lg = login::Login::new(cols, rows, mode, keys::Layout::Us, "exec85".into(), Some("tester".into()));
             let deny = |_: &str, _: &str| Err(account::AuthError::BadPassword);
@@ -349,6 +364,7 @@ fn main() {
     match args.get(1).map(String::as_str) {
         Some("--version") => println!("exec85 {}", env!("CARGO_PKG_VERSION")),
         Some("--ppm") => render_to_file(&args[1..]),
+        Some("--splash") => stage_splash(),
         Some("--installer") => stage_installer(),
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
