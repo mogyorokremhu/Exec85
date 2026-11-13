@@ -37,7 +37,11 @@ pub fn decode_request(line: &str) -> Vec<String> { line.split_whitespace().map(u
 
 // ---- running commands (replaceable in tests) -------------------------------------------------------------------
 
-pub trait Runner { fn run(&self, cmd: &str, args: &[&str]) -> (i32, String); }
+pub trait Runner {
+    fn run(&self, cmd: &str, args: &[&str]) -> (i32, String);
+    /// Like `run`, with text on standard input (for passwords: they never go on a command line). The default ignores the input; real runners pass it on.
+    fn run_input(&self, cmd: &str, args: &[&str], input: &str) -> (i32, String) { let _ = input; self.run(cmd, args) }
+}
 
 pub struct SysRunner;
 impl Runner for SysRunner {
@@ -46,6 +50,17 @@ impl Runner for SysRunner {
             Ok(o) => { let mut s = String::from_utf8_lossy(&o.stdout).into_owned(); s.push_str(&String::from_utf8_lossy(&o.stderr)); (o.status.code().unwrap_or(-1), s) }
             Err(e) => (-1, format!("cannot run {cmd}: {e}")),
         }
+    }
+    fn run_input(&self, cmd: &str, args: &[&str], input: &str) -> (i32, String) { SysRunner::spawn_with_input(cmd, args, input) }
+}
+
+impl SysRunner {
+    fn spawn_with_input(cmd: &str, args: &[&str], input: &str) -> (i32, String) {
+        use std::io::Write as _;
+        let child = std::process::Command::new(cmd).args(args).env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn();
+        let Ok(mut child) = child else { return (-1, format!("cannot run {cmd}")) };
+        if let Some(mut si) = child.stdin.take() { let _ = si.write_all(input.as_bytes()); }
+        match child.wait_with_output() { Ok(o) => { let mut s = String::from_utf8_lossy(&o.stdout).into_owned(); s.push_str(&String::from_utf8_lossy(&o.stderr)); (o.status.code().unwrap_or(-1), s) } Err(e) => (-1, e.to_string()) }
     }
 }
 
@@ -96,6 +111,39 @@ fn tail(path: &Path, lines: usize) -> String {
     all[all.len().saturating_sub(lines)..].join("\n")
 }
 
+// ---- firewall ----------------------------------------------------------------------------------------------------------------
+
+fn fw_conf_path(root: &Path) -> PathBuf { root.join("etc/exec85/firewall.conf") }
+pub fn fw_nft_path(root: &Path) -> PathBuf { root.join("etc/exec85/firewall.nft") }
+
+pub fn fw_config(root: &Path) -> crate::firewall::Config { crate::firewall::parse_config(&std::fs::read_to_string(fw_conf_path(root)).unwrap_or_default()) }
+
+/// The ports the services have declared (each open to the local network).
+pub fn fw_service_rules(root: &Path) -> Vec<crate::firewall::Rule> {
+    let mut out = Vec::new();
+    for n in list_names(root) {
+        let Ok(d) = load(root, &n) else { continue };
+        for (port, proto) in crate::firewall::parse_ports(&d.ports).unwrap_or_default() { out.push(crate::firewall::Rule { name: d.name.clone(), port, proto, scope: crate::firewall::Scope::Local }); }
+    }
+    out
+}
+
+/// Write the ruleset for the current configuration and load it.
+pub fn fw_apply(ctx: &Ctx) -> Result<String, String> {
+    let script = crate::firewall::render_ruleset(&fw_config(ctx.root), &fw_service_rules(ctx.root));
+    let path = fw_nft_path(ctx.root);
+    if let Some(d) = path.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; }
+    std::fs::write(&path, script).map_err(|e| e.to_string())?;
+    let (code, out) = ctx.runner.run("nft", &["-f", &path.to_string_lossy()]);
+    if code == 0 { Ok(String::new()) } else { Err(format!("The firewall rules could not be loaded: {}", out.trim())) }
+}
+
+fn fw_save(ctx: &Ctx, c: &crate::firewall::Config) -> Result<String, String> {
+    if let Some(d) = fw_conf_path(ctx.root).parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; }
+    std::fs::write(fw_conf_path(ctx.root), crate::firewall::render_config(c)).map_err(|e| e.to_string())?;
+    fw_apply(ctx)
+}
+
 pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
     let arg = |i: usize| w.get(i).map(String::as_str).ok_or_else(|| "Missing argument.".to_string());
     match arg(0)? {
@@ -124,6 +172,7 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
             std::fs::set_permissions(&ip, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
             let (_c, out) = ctx.runner.run("rc-update", &[if d.autostart { "add" } else { "del" }, &d.init_name(), "default"]);
             let _ = out;
+            let _ = fw_apply(ctx);   // the service may have declared ports
             Ok(String::new())
         }
         "svc-remove" => {
@@ -132,6 +181,7 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
             ctx.runner.run("rc-update", &["del", &d.init_name(), "default"]);
             let _ = std::fs::remove_file(init_path(ctx.root, &d.name));
             std::fs::remove_file(conf_path(ctx.root, &d.name)).map_err(|e| e.to_string())?;
+            let _ = fw_apply(ctx);
             Ok(String::new())
         }
         a @ ("svc-start" | "svc-stop" | "svc-restart") => {
@@ -169,6 +219,56 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
             let kind = match w.get(6) { Some(t) => crate::mc::ServerType::parse(t).ok_or("Server type must be vanilla, paper or fabric.")?, None => crate::mc::ServerType::Vanilla };
             crate::mc::create(ctx, &crate::mc::Create { kind, name, version, ram_gb, eula: eula == "1", user })
         }
+        "fw-status" => {
+            let c = fw_config(ctx.root);
+            let mut out = format!("enabled {}\n", if c.enabled { "yes" } else { "no" });
+            for r in &c.rules { out.push_str(&format!("rule {} {} {} {} manual\n", r.name, r.port, r.proto.id(), r.scope.id())); }
+            for r in fw_service_rules(ctx.root) { out.push_str(&format!("rule {} {} {} {} service\n", r.name, r.port, r.proto.id(), r.scope.id())); }
+            Ok(out)
+        }
+        "fw-enable" => { let mut c = fw_config(ctx.root); c.enabled = match arg(1)? { "on" => true, "off" => false, _ => return Err("Use on or off.".into()) }; fw_save(ctx, &c) }
+        "fw-allow" => {
+            let (name, spec) = (arg(1)?, arg(2)?);
+            if !crate::firewall::valid_rule_name(name) { return Err("The rule name may only have lowercase letters, digits, - and _.".into()); }
+            let (port, proto) = crate::firewall::parse_port(spec)?;
+            let scope = match arg(3).unwrap_or("local") { "local" => crate::firewall::Scope::Local, "anywhere" => crate::firewall::Scope::Anywhere, _ => return Err("The scope must be local or anywhere.".into()) };
+            let mut c = fw_config(ctx.root);
+            c.rules.retain(|r| r.name != name);
+            c.rules.push(crate::firewall::Rule { name: name.to_string(), port, proto, scope });
+            fw_save(ctx, &c)
+        }
+        "fw-remove" => { let mut c = fw_config(ctx.root); let before = c.rules.len(); c.rules.retain(|r| r.name != arg(1).unwrap_or("")); if c.rules.len() == before { return Err("There is no such rule.".into()); } fw_save(ctx, &c) }
+        "fw-apply" => fw_apply(ctx),
+        "ssh-status" => Ok(crate::ssh::status(ctx)),
+        "ssh-enable" => {
+            let port: u16 = arg(1)?.parse().map_err(|_| "The port must be a number.".to_string())?;
+            crate::ssh::enable(ctx, port, arg(2)? == "1", arg(3)?)
+        }
+        "ssh-disable" => crate::ssh::disable(ctx),
+        "ssh-addkey" => crate::ssh::add_key(ctx, arg(1)?, arg(2)?),
+        "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
+        "net-set" => {
+            let name = arg(1)?;
+            let mode = match arg(2)? {
+                "dhcp" => crate::netconf::Mode::Dhcp,
+                "off" => crate::netconf::Mode::Off,
+                "static" => crate::netconf::static_mode(arg(3)?, arg(4)?, w.get(5).map_or("", String::as_str))?,
+                _ => return Err("The mode must be dhcp, static or off.".into()),
+            };
+            crate::netapply::set(ctx, name, mode)
+        }
+        "net-apply" => Ok(crate::netapply::apply_all(ctx).join("\n")),
+        "wifi-scan" => crate::netapply::wifi_scan(ctx, arg(1)?),
+        "wifi-connect" => crate::netapply::wifi_connect(ctx, arg(1)?, arg(2)?, w.get(3).map_or("", String::as_str)),
+        "wifi-forget" => crate::netapply::wifi_forget(ctx, arg(1)?),
+        "recipe-list" => Ok(crate::recipes::list(ctx)),
+        "recipe-install" => {
+            // recipe-install ID USER key=value key=value ...  (values may contain spaces: they travel escaped)
+            let (id, user) = (arg(1)?, arg(2)?);
+            let values: Vec<(String, String)> = w[3..].iter().filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect();
+            crate::recipes::install(ctx, id, &values, user)
+        }
+        "recipe-remove" => crate::recipes::remove(ctx, arg(1)?),
         "bot-create" => {
             let (name, lang, kind, srcarg, token, user) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?, arg(6)?);
             let lang = crate::bot::Lang::parse(lang).ok_or("The language must be python or node.")?;
@@ -353,6 +453,7 @@ pub fn serve() -> ! {
     crate::supervisor::console_line("EXEC85_HELPER ready");
     std::thread::spawn(report_loop);
     std::thread::spawn(usb_watch);
+    let _ = fw_apply(&Ctx { root: Path::new("/"), runner: &SysRunner });   // make sure the rules match the services that exist
     for c in l.incoming().flatten() { std::thread::spawn(move || serve_one(c)); }
     std::process::exit(1)
 }
@@ -402,12 +503,41 @@ pub fn cli(args: &[String]) -> i32 {
             let (kind, arg) = match (opt("--folder"), opt("--git")) { (Some(f), _) => ("folder", f), (None, Some(g)) => ("git", g), _ => ("starter", "-".to_string()) };
             show(call(&["bot-create", name, lang, kind, &arg, &token, &user]))
         }
+        ["--app", "list"] => show(call(&["recipe-list"])),
+        ["--app", "remove", id] => show(call(&["recipe-remove", id])),
+        ["--app", "install", id, rest @ ..] => {
+            // app install ID key=value ...  (the catalog screen is the nicer way to type a password)
+            let user = std::env::var("USER").unwrap_or_default();
+            let mut w: Vec<&str> = vec!["recipe-install", id, &user];
+            w.extend(rest.iter().copied());
+            show(call(&w))
+        }
+        ["--ssh", "status"] => show(call(&["ssh-status"])),
+        ["--ssh", "disable"] => show(call(&["ssh-disable"])),
+        ["--ssh", "enable", rest @ ..] => {
+            let opt = |flag: &str| rest.iter().position(|a| *a == flag).and_then(|i| rest.get(i + 1).copied()).map(String::from);
+            let user = opt("--user").unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+            show(call(&["ssh-enable", &opt("--port").unwrap_or_else(|| "22".into()), if rest.contains(&"--password-login") { "1" } else { "0" }, &user]))
+        }
+        ["--ssh", "addkey", key, rest @ ..] => {
+            let user = rest.iter().position(|a| *a == "--user").and_then(|i| rest.get(i + 1).copied()).map(String::from).unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+            show(call(&["ssh-addkey", &user, key]))
+        }
+        ["--mc", "accept", name] => show(call(&["mc-accept", name])),
+        ["--net", "set", name, mode, rest @ ..] => { let mut v = vec!["net-set", name, mode]; v.extend(rest.iter().copied()); show(call(&v)) }
+        ["--net", "wifi", "scan", iface] => show(call(&["wifi-scan", iface])),
+        ["--net", "wifi", "connect", iface, ssid] => { let pw = std::env::var("WIFI_PASSWORD").unwrap_or_default(); show(call(&["wifi-connect", iface, ssid, &pw])) }
+        ["--net", "wifi", "forget", ssid] => show(call(&["wifi-forget", ssid])),
+        ["--fw", "status"] => show(call(&["fw-status"])),
+        ["--fw", on_off @ ("on" | "off")] => show(call(&["fw-enable", on_off])),
+        ["--fw", "allow", name, port, rest @ ..] => { let scope = rest.first().copied().unwrap_or("local"); show(call(&["fw-allow", name, port, scope])) }
+        ["--fw", "remove", name] => show(call(&["fw-remove", name])),
         ["--usb", "eject", mount] => show(call(&["usb-eject", mount])),
         ["--pkg", a @ ("add" | "del"), pkgs @ ..] if !pkgs.is_empty() => { let mut v = vec![format!("apk-{a}")]; v.extend(pkgs.iter().map(|p| p.to_string())); let r: Vec<&str> = v.iter().map(String::as_str).collect(); show(call(&r)) }
         ["--pkg", "search", q] => show(call(&["apk-search", q])),
         ["--pkg", "update"] => show(call(&["apk-update"])),
         ["--pkg", "list"] => show(call(&["apk-installed"])),
-        _ => { let _ = writeln!(std::io::stderr(), "usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --bot create NAME python|node [--folder PATH | --git URL] [--user U]   (token: set DISCORD_TOKEN first, or type it as the first line)\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions [vanilla|paper|fabric] | create NAME VERSION 2|4|8 [--eula] [--type vanilla|paper|fabric] [--user U]"); 2 }
+        _ => { let _ = writeln!(std::io::stderr(), "usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --bot create NAME python|node [--folder PATH | --git URL] [--user U]   (token: set DISCORD_TOKEN first, or type it as the first line)\n       exec85 --ssh status | enable [--port N] [--password-login] [--user U] | disable | addkey \"PUBLIC KEY\" [--user U]\n       exec85 --net set IFACE dhcp|off|static CIDR GATEWAY [DNS] | wifi scan IFACE | wifi connect IFACE SSID (password in WIFI_PASSWORD) | wifi forget SSID\n       exec85 --fw status | on | off | allow NAME PORT[/tcp|udp] [local|anywhere] | remove NAME\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions [vanilla|paper|fabric] | create NAME VERSION 2|4|8 [--eula] [--type vanilla|paper|fabric] [--user U]"); 2 }
     }
 }
 
@@ -429,7 +559,7 @@ mod tests {
         d
     }
     fn w(s: &str) -> Vec<String> { decode_request(s) }
-    fn conf() -> String { services::render_conf(&ServiceDef { name: "bot".into(), description: "A bot".into(), command: "python3 bot.py".into(), dir: "/srv/bot".into(), user: "tester".into(), env: vec![], autostart: true }) }
+    fn conf() -> String { services::render_conf(&ServiceDef { name: "bot".into(), description: "A bot".into(), command: "python3 bot.py".into(), dir: "/srv/bot".into(), user: "tester".into(), env: vec![], autostart: true, ports: String::new() }) }
 
     #[test]
     fn wire_format_round_trips_awkward_text() {
@@ -554,6 +684,46 @@ mod tests {
         mk(52, 51, &["sleep-helper"]);
         assert_eq!(find_supervised_pid(&d, "exec85-ticker"), Some(51));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_firewall_follows_the_services_and_the_hand_made_rules() {
+        let r = root("fw"); let f = Fake::new(); let c = Ctx { root: &r, runner: &f };
+        let with_ports = services::render_conf(&ServiceDef { name: "bot".into(), description: "A bot".into(), command: "python3 bot.py".into(), dir: "/srv/bot".into(), user: "tester".into(), env: vec![], autostart: true, ports: "8080/tcp,25565/udp".into() });
+        handle(&c, &["svc-save".into(), with_ports]).unwrap();
+        let nft = std::fs::read_to_string(r.join("etc/exec85/firewall.nft")).unwrap();
+        assert!(nft.contains("tcp dport 8080 accept comment \"bot\"") && nft.contains("udp dport 25565"), "a service's declared ports are opened (to the local network): {nft}");
+        assert!(f.calls.borrow().iter().any(|x| x.starts_with("nft -f ")), "and the rules are loaded");
+        handle(&c, &w("fw-allow ssh 22 local")).unwrap();
+        handle(&c, &w("fw-allow web 443/tcp anywhere")).unwrap();
+        let st = handle(&c, &w("fw-status")).unwrap();
+        assert!(st.contains("enabled yes") && st.contains("rule ssh 22 tcp local manual") && st.contains("rule web 443 tcp anywhere manual") && st.contains("rule bot 8080 tcp local service"), "{st}");
+        assert!(std::fs::read_to_string(r.join("etc/exec85/firewall.nft")).unwrap().contains("\ttcp dport 443 accept"), "anywhere = no address condition");
+        handle(&c, &w("fw-allow ssh 2222")).unwrap();   // the same name replaces the rule
+        assert!(handle(&c, &w("fw-status")).unwrap().contains("rule ssh 2222 tcp local manual") && !handle(&c, &w("fw-status")).unwrap().contains("rule ssh 22 "));
+        handle(&c, &w("fw-enable off")).unwrap();
+        assert!(std::fs::read_to_string(r.join("etc/exec85/firewall.nft")).unwrap().contains("policy accept"));
+        handle(&c, &w("fw-enable on")).unwrap();
+        handle(&c, &w("fw-remove web")).unwrap();
+        assert!(handle(&c, &w("fw-remove web")).is_err(), "removing a rule that is not there is reported");
+        handle(&c, &w("svc-remove bot")).unwrap();
+        assert!(!std::fs::read_to_string(r.join("etc/exec85/firewall.nft")).unwrap().contains("8080"), "a removed service's ports are closed again");
+        for bad in ["fw-allow Bad 22", "fw-allow a 0", "fw-allow a 99999", "fw-allow a 22 mars", "fw-allow a x/y", "fw-enable maybe", "fw-allow"] { assert!(handle(&c, &w(bad)).is_err(), "{bad}"); }
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn a_failing_firewall_load_is_reported_not_ignored() {
+        let r = root("fwbad"); let f = Fake::new(); *f.reply.borrow_mut() = (1, "Error: no such table".into());
+        let c = Ctx { root: &r, runner: &f };
+        assert!(handle(&c, &w("fw-allow a 22")).unwrap_err().contains("could not be loaded"));
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn the_ruleset_that_ships_with_the_system_is_the_default_one() {
+        let shipped = include_str!("../../image/overlay/etc/exec85/firewall.nft");
+        assert_eq!(shipped, crate::firewall::render_ruleset(&crate::firewall::Config::default(), &[]), "regenerate image/overlay/etc/exec85/firewall.nft from render_ruleset if the default changes");
     }
 
     #[test]

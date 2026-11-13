@@ -154,7 +154,7 @@ pub fn create(ctx: &Ctx, c: &Create) -> Result<String, String> {
     if code != 0 { cleanup(); return Err(format!("Could not give the folder to {}: {}", c.user, out.trim())); }
 
     // 5. the service
-    let def = ServiceDef { name: c.name.into(), description: format!("Discord bot ({})", c.lang.label()), command, dir: crate::mc::absolute_in(ctx.root, &app), user: c.user.into(), env: vec![], autostart: true };
+    let def = ServiceDef { name: c.name.into(), description: format!("Discord bot ({})", c.lang.label()), command, dir: crate::mc::absolute_in(ctx.root, &app), user: c.user.into(), env: vec![], autostart: true, ports: String::new() };
     if let Err(e) = crate::helper::handle(ctx, &["svc-save".to_string(), services::render_conf(&def)]) { cleanup(); return Err(e); }
     crate::helper::handle(ctx, &["svc-start".to_string(), c.name.to_string()])?;
     Ok(format!("Your Discord bot {} is installed and starting. Invite it to your server from the Discord developer portal, then type !ping in a channel it can read.", c.name))

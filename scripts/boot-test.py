@@ -374,13 +374,30 @@ def scenario_install():
         vm.stop()
 
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software"]
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote"]
 
-SHIFTED = {"_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
+SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}
 
 KEYBOARD = {"layout": "us"}   # the layout the system under test is using
 UK_SHIFTED = {"|": "shift-less", '"': "shift-2"}   # the UK keyboard puts these elsewhere than the US one
+
+def http_probe(port, timeout=5):
+    """From outside the VM: does an HTTP server answer on this forwarded port?"""
+    try:
+        c = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        c.sendall(b"GET / HTTP/1.0\r\n\r\n"); c.settimeout(timeout)
+        data = c.recv(100); c.close()
+        return data.startswith(b"HTTP/")
+    except Exception:
+        return False
+
+def wait_probe(port, want, seconds=20):
+    end = time.time() + seconds
+    while time.time() < end:
+        if http_probe(port, 3) == want: return True
+        time.sleep(1)
+    return False
 
 def type_text(vm, text):
     """Type text into the focused window with real key presses."""
@@ -468,7 +485,8 @@ def scenario_testing():
     subprocess.run(["mkfs.vfat", "-F", "32", "-n", "TESTUSB", usb], check=True, stdout=subprocess.DEVNULL)
     subprocess.run(["mcopy", "-i", usb, os.path.join(outdir, "hello.txt"), "::HELLO.TXT"], check=True)
     # the USB controller and the stick's disk exist from the start; the stick itself is plugged in later with device_add
-    vm = VM("testing", cdrom=iso, mem=3072, extra=["-device", "qemu-xhci,id=xhci", "-drive", f"if=none,id=usbd,file={usb},format=raw"])   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
+    vm = VM("testing", cdrom=iso, mem=3072, extra=["-device", "qemu-xhci,id=xhci", "-drive", f"if=none,id=usbd,file={usb},format=raw",
+                                                      "-netdev", "user,id=n0,hostfwd=tcp::2222-:22,hostfwd=tcp::8081-:8080,hostfwd=tcp::8090-:8090", "-device", "e1000e,netdev=n0"])   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
     try:
         step("testing: installer is up", vm.wait_for(r"EXEC85_SCREEN installer", 600 if SLOW else 120) is not None)
         press(vm, "ret", I, step="theme")
@@ -585,6 +603,43 @@ def scenario_testing():
         step("services: it comes back by itself with a new process", d is not None, f"old pid {pid1}")
         terminal_run(vm, "wget -q -O /dev/null http://127.0.0.1:8080/; echo HTTP2=$?", "HTTP2=0", 60, "services: the website answers again")
 
+        # ---- firewall: a closed port is not reachable from outside, an opened one is ----
+        step("firewall: a port nobody opened is not reachable from outside", not http_probe(8081), "the website on 8080 answered from outside although no rule opens it")
+        terminal_run(vm, "fw allow web 8080/tcp; echo FW$((5-3))", "FW2", 60, "firewall: a port is opened with fw allow")
+        step("firewall: the opened port is reachable from the home network", wait_probe(8081, True))
+        terminal_run(vm, "fw remove web; echo FR$((5-3))", "FR2", 60, "firewall: a port is closed with fw remove")
+        step("firewall: and it is closed again", wait_probe(8081, False))
+
+        # ---- SSH: key-only by default, reachable from the home network ----
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "citest", "-f", os.path.join(outdir, "id_test")], check=True)
+        pub = open(os.path.join(outdir, "id_test.pub")).read().strip()
+        terminal_run(vm, "exec85 --ssh enable > /tmp/ssh.txt 2>&1; echo SE$((5-3))", "SE2", 600, "ssh: the server is installed and switched on")
+        try: terminal_run(vm, f"exec85 --ssh addkey \"{pub}\" > /tmp/key.txt 2>&1; cat /tmp/key.txt | cut -c1-40", "Key_added", 60, "ssh: a public key is added")
+        except AssertionError:
+            dump_file(vm, "/tmp/ssh.txt", 4); dump_file(vm, "/tmp/key.txt", 3)
+            raise
+        ssh = ["ssh", "-p", "2222", "-i", os.path.join(outdir, "id_test"), "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "tester@127.0.0.1"]
+        ok = False; out = ""
+        for _ in range(8):
+            r = subprocess.run(ssh + ["echo", "SSH_OK_$((1+1))"], capture_output=True, text=True); out = r.stdout + r.stderr
+            if "SSH_OK_" in r.stdout: ok = True; break
+            time.sleep(4)
+        step("ssh: logging in with the key works from outside", ok, out[-300:])
+        r = subprocess.run(["ssh", "-p", "2222", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "BatchMode=yes", "-o", "PreferredAuthentications=password", "-o", "PubkeyAuthentication=no", "-o", "ConnectTimeout=8", "tester@127.0.0.1", "echo", "BAD"], capture_output=True, text=True)
+        step("ssh: a password login is refused", "BAD" not in r.stdout and "Permission denied" in r.stderr, (r.stdout + r.stderr)[-300:])
+        for f in ("id_test", "id_test.pub"):   # the test key is thrown away (and must not end up in the saved results)
+            try: os.remove(os.path.join(outdir, f))
+            except OSError: pass
+
+        # ---- network settings: a fixed address and back to automatic, with the network still working each time ----
+        terminal_run(vm, "exec85 --net set eth0 static 10.0.2.15/24 10.0.2.2 10.0.2.3 > /tmp/n.txt 2>&1; echo N1$((5-3))", "N12", 90, "network: a fixed address is applied")
+        terminal_run(vm, "ip route | head -1 | cut -c1-30", "default_via_10.0.2.2", 30, "network: the gateway is the one that was chosen")
+        terminal_run(vm, "head -1 /etc/resolv.conf", "nameserver_10.0.2.3", 30, "network: the name server is the one that was chosen")
+        terminal_run(vm, "wget -q -O /dev/null https://piston-meta.mojang.com/mc/game/version_manifest_v2.json; echo NW$?", "NW0", 90, "network: names and the internet still work with the fixed address")
+        terminal_run(vm, "exec85 --net set eth0 dhcp > /tmp/n2.txt 2>&1; echo N2$((5-3))", "N22", 90, "network: back to an automatic address")
+        terminal_run(vm, "ip addr show eth0 | grep -c 'inet 10.0.2.15'; echo A$((5-3))", "re:[1-9]A2", 60, "network: the automatic address is back")
+        terminal_run(vm, "wget -q -O /dev/null https://piston-meta.mojang.com/mc/game/version_manifest_v2.json; echo NX$?", "NX0", 90, "network: and the internet works again")
+
         # ---- sleep mode: the screen goes black, the service keeps running, a key wakes it without being used ----
         n = svc_count(vm, "web")
         press(vm, "f8", asleep="true")
@@ -679,6 +734,20 @@ def scenario_testing():
                 raise
             terminal_run(vm, f"ls -l /srv/bots/{name}/.env | cut -c1-10", "-rw-------", 30, f"bot: the {lang} bot's token file is private")
             terminal_run(vm, f"svc stop {name}; echo S{tag}$((5-3))", f"S{tag}2", 60, f"bot: the {lang} bot can be stopped")
+
+        # Quick installers from the app catalog: each is installed for real and must answer
+        terminal_run(vm, "svc stop nginx; svc remove nginx; app install website > /tmp/web.txt 2>&1; echo W$((5-3))", "W2", 600, "catalog: the website installer finishes")
+        dump_file(vm, "/tmp/web.txt", 6)
+        step("catalog: the website answers from outside", wait_probe(8090, True, 60))
+        terminal_run(vm, "wget -qO- http://127.0.0.1:8090/ | grep -c 'It works'; echo W$((6-3))", "re:[1-9]\\d*W3", 30, "catalog: the website serves the page")
+        terminal_run(vm, "app list | grep website; echo W$((6-2))", "installed", 30, "catalog: the website shows as installed")
+        terminal_run(vm, "app install syncthing gui_password=longenough1 > /tmp/st.txt 2>&1; echo Y$((5-3))", "Y2", 900, "catalog: the Syncthing installer finishes")
+        dump_file(vm, "/tmp/st.txt", 3)
+        terminal_run(vm, "sleep 20; wget -S -O /dev/null http://127.0.0.1:8384/ 2>&1 | grep -c HTTP/; echo Z$((5-3))", "re:[1-9]\\d*Z2", 120, "catalog: Syncthing's web page answers")
+        terminal_run(vm, "app install transmission password=longenough1 > /tmp/tr.txt 2>&1; echo T$((5-3))", "T2", 900, "catalog: the Transmission installer finishes")
+        dump_file(vm, "/tmp/tr.txt", 3)
+        terminal_run(vm, "sleep 15; wget -S -O /dev/null http://127.0.0.1:9091/transmission/rpc 2>&1 | grep -c HTTP/; echo U$((5-3))", "re:[1-9]\\d*U2", 120, "catalog: Transmission's web page answers")
+        terminal_run(vm, "app remove website; app list | grep website; echo R$((5-3))", "re:website +no.*R2|no.*R2", 60, "catalog: the website can be removed")
     finally:
         vm.stop()
 

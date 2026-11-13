@@ -15,6 +15,7 @@ mod disks;
 mod display;
 mod fileops;
 mod font;
+mod firewall;
 mod fs;
 mod gfx;
 mod input;
@@ -23,13 +24,17 @@ mod installer;
 mod keys;
 mod layout;
 mod login;
+mod netapply;
+mod netconf;
 mod mc;
 mod paint;
+mod recipes;
 mod shell;
 mod splash;
 mod supervisor;
 mod helper;
 mod services;
+mod ssh;
 mod sys;
 mod usb;
 mod ui;
@@ -364,7 +369,7 @@ fn main() {
     if let Some(name) = args.first().and_then(|a| Path::new(a).file_name()).map(|n| n.to_string_lossy().into_owned()) {
         if let Some(code) = cmds::run(&name, &args[1..]) { std::process::exit(code); }
         // `svc` and `pkg` are short forms of `exec85 --svc` and `exec85 --pkg`.
-        if name == "svc" || name == "pkg" || name == "mc" || name == "bot" {
+        if name == "svc" || name == "pkg" || name == "mc" || name == "bot" || name == "fw" || name == "app" {
             let mut a = vec![format!("--{name}")];
             a.extend(args[1..].iter().cloned());
             std::process::exit(helper::cli(&a));
@@ -382,7 +387,8 @@ fn main() {
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
         Some("--helperd") => helper::serve(),
-        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") | Some("--bot") => std::process::exit(helper::cli(&args[1..])),
+        Some("--net-apply") => { let ctx = helper::Ctx { root: Path::new("/"), runner: &helper::SysRunner }; for n in netapply::apply_all(&ctx) { eprintln!("{n}"); } }
+        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") | Some("--bot") | Some("--fw") | Some("--ssh") | Some("--net") | Some("--app") => std::process::exit(helper::cli(&args[1..])),
         None => supervisor::run(),
         Some(other) => { eprintln!("unknown option {other}; try --version"); std::process::exit(2); }
     }

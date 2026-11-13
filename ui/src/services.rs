@@ -14,6 +14,8 @@ pub struct ServiceDef {
     pub user: String,
     pub env: Vec<(String, String)>,
     pub autostart: bool,
+    /// Ports this service needs reachable from the local network, e.g. `25565/tcp,25565/udp` (the firewall opens exactly these).
+    pub ports: String,
 }
 
 pub const INIT_PREFIX: &str = "exec85-";
@@ -36,6 +38,7 @@ impl ServiceDef {
         if self.command.contains('\n') || self.description.contains('\n') { return Err("No line breaks, please.".into()); }
         if !self.dir.is_empty() && !self.dir.starts_with('/') { return Err("The folder must be a full path starting with /.".into()); }
         if self.user.is_empty() || !self.user.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err("Enter a valid user name.".into()); }
+        crate::firewall::parse_ports(&self.ports)?;
         for (k, v) in &self.env {
             if !valid_env_name(k) { return Err(format!("'{k}' is not a valid variable name.")); }
             if v.contains('\n') { return Err("No line breaks in variables.".into()); }
@@ -104,7 +107,7 @@ pub fn render_script(d: &ServiceDef) -> Result<String, String> {
 /// The stored definition (what the UI reads back and edits). One `key=value` per line; values are percent-escaped for `%` and newlines only.
 pub fn render_conf(d: &ServiceDef) -> String {
     let esc = |s: &str| s.replace('%', "%25").replace('\n', "%0A");
-    let mut s = format!("name={}\ndescription={}\ncommand={}\ndir={}\nuser={}\nautostart={}\n", esc(&d.name), esc(&d.description), esc(&d.command), esc(&d.dir), esc(&d.user), d.autostart);
+    let mut s = format!("name={}\ndescription={}\ncommand={}\ndir={}\nuser={}\nautostart={}\nports={}\n", esc(&d.name), esc(&d.description), esc(&d.command), esc(&d.dir), esc(&d.user), d.autostart, esc(&d.ports));
     for (k, v) in &d.env { let _ = writeln!(s, "env.{k}={}", esc(v)); }
     s
 }
@@ -117,7 +120,7 @@ pub fn parse_conf(text: &str) -> Option<ServiceDef> {
         let v = unesc(v);
         match k {
             "name" => d.name = v, "description" => d.description = v, "command" => d.command = v, "dir" => d.dir = v, "user" => d.user = v,
-            "autostart" => d.autostart = v == "true",
+            "autostart" => d.autostart = v == "true", "ports" => d.ports = v,
             _ => if let Some(e) = k.strip_prefix("env.") { d.env.push((e.to_string(), v)); },
         }
     }
@@ -141,7 +144,7 @@ mod tests {
     use super::*;
 
     fn def() -> ServiceDef {
-        ServiceDef { name: "mc".into(), description: "Minecraft".into(), command: "java -Xmx2G -jar server.jar nogui".into(), dir: "/srv/mc".into(), user: "tester".into(), env: vec![("JAVA_OPTS".into(), "-Dx=1".into())], autostart: true }
+        ServiceDef { name: "mc".into(), description: "Minecraft".into(), command: "java -Xmx2G -jar server.jar nogui".into(), dir: "/srv/mc".into(), user: "tester".into(), env: vec![("JAVA_OPTS".into(), "-Dx=1".into())], autostart: true, ports: "25565/tcp".into() }
     }
 
     #[test]

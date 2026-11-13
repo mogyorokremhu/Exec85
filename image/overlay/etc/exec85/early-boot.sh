@@ -28,15 +28,10 @@ if ! grep -qw exec85.live /proc/cmdline; then
 fi
 # The loopback interface (127.0.0.1): programs on this computer talk to each other through it (a website and its client, a database ...).
 ip link set lo up 2>/dev/null
-# Network: bring up every wired interface and ask the router for an address (in the background, so boot is not delayed).
+# Network and sound drivers by name (the one-pass scan above only finds drivers whose device is already visible).
 modprobe -a e1000 e1000e r8169 virtio_net igb 2>/dev/null
-# Sound cards (the codec drivers load themselves once the controller is up).
 modprobe -a snd_hda_intel snd_intel8x0 snd_ac97_codec snd_hda_codec_generic snd_hda_codec_realtek snd_hda_codec_hdmi 2>/dev/null
 mdev -s
-for n in /sys/class/net/*; do
-  i=${n##*/}
-  case "$i" in lo|wl*) continue ;; esac
-  ip link set "$i" up 2>/dev/null
-  udhcpc -b -q -S -i "$i" -p "/run/udhcpc.$i.pid" >/dev/null 2>&1 &
-done
+# Network: apply the saved settings (automatic addresses by default, fixed ones or Wi-Fi if chosen) in the background, so boot is not delayed.
+/usr/bin/exec85 --net-apply >/dev/null 2>&1 &
 exit 0

@@ -16,13 +16,13 @@ pub fn parse_list(s: &str) -> Vec<Row> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Form { pub fields: [String; 5], pub autostart: bool, pub focus: usize, pub editing: bool }
-const LABELS: [&str; 7] = ["Name", "Command", "Folder (optional)", "Run as user", "Variables  NAME=value;NAME2=value", "Start at boot", ""];
+pub struct Form { pub fields: [String; 6], pub autostart: bool, pub focus: usize, pub editing: bool }
+const LABELS: [&str; 8] = ["Name", "Command", "Folder (optional)", "Run as user", "Variables  NAME=value;NAME2=value", "Open ports to the home network (optional)  e.g. 8080/tcp 25565/udp", "Start at boot", ""];
 
 impl Form {
     fn from_def(d: &ServiceDef, editing: bool) -> Form {
         let vars = d.env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(";");
-        Form { fields: [d.name.clone(), d.command.clone(), d.dir.clone(), d.user.clone(), vars], autostart: d.autostart, focus: if editing { 1 } else { 0 }, editing }
+        Form { fields: [d.name.clone(), d.command.clone(), d.dir.clone(), d.user.clone(), vars, d.ports.replace(',', " ")], autostart: d.autostart, focus: if editing { 1 } else { 0 }, editing }
     }
     pub fn to_def(&self) -> Result<ServiceDef, String> {
         let mut env = Vec::new();
@@ -30,7 +30,7 @@ impl Form {
             let (k, v) = part.split_once('=').ok_or_else(|| format!("'{part}' needs the form NAME=value."))?;
             env.push((k.trim().to_string(), v.to_string()));
         }
-        let d = ServiceDef { name: self.fields[0].trim().into(), description: String::new(), command: self.fields[1].trim().into(), dir: self.fields[2].trim().into(), user: self.fields[3].trim().into(), env, autostart: self.autostart };
+        let d = ServiceDef { name: self.fields[0].trim().into(), description: String::new(), command: self.fields[1].trim().into(), dir: self.fields[2].trim().into(), user: self.fields[3].trim().into(), env, autostart: self.autostart, ports: crate::firewall::format_ports(&crate::firewall::parse_ports(&self.fields[5])?) };
         d.validate()?;
         Ok(d)
     }
@@ -98,10 +98,10 @@ impl Application for Services {
                 let mut keep = true;
                 match k.code {
                     code::ESC => keep = false,
-                    code::TAB | code::DOWN => f.focus = (f.focus + 1) % 6,
-                    code::UP => f.focus = (f.focus + 5) % 6,
+                    code::TAB | code::DOWN => f.focus = (f.focus + 1) % 7,
+                    code::UP => f.focus = (f.focus + 6) % 7,
                     code::ENTER => {
-                        if f.focus < 5 { f.focus += 1; } else {
+                        if f.focus < 6 { f.focus += 1; } else {
                             match f.to_def() {
                                 Ok(d) => { keep = false; self.ask(env, "save", &["svc-save", &services::render_conf(&d)]); }
                                 Err(e) => self.msg = e,
@@ -109,7 +109,7 @@ impl Application for Services {
                         }
                     }
                     _ => {
-                        if f.focus == 5 { if k.ch() == Some(' ') { f.autostart = !f.autostart; } }
+                        if f.focus == 6 { if k.ch() == Some(' ') { f.autostart = !f.autostart; } }
                         else if !(f.editing && f.focus == 0) { edit_text(&mut f.fields[f.focus], &k, 200); }
                     }
                 }
@@ -152,13 +152,13 @@ impl Application for Services {
             Mode::Form(f) => {
                 p.text(a.x, a.y, if f.editing { "Edit service" } else { "New service" }, t.accent, None);
                 let mut y = a.y + 2;
-                for i in 0..5 {
+                for i in 0..6 {
                     if y + 2 > foot { break; }
                     p.text(a.x, y, LABELS[i], t.dim, None);
                     p.field(a.x, y + 1, a.w.min(70), &f.fields[i], f.focus == i && focused, false);
                     y += 3;
                 }
-                if y < foot { p.clip(a.x, y, a.w, &format!("{} Start at boot: {}   (Space to change)", if f.focus == 5 { ">" } else { " " }, if f.autostart { "yes" } else { "no" }), if f.focus == 5 { t.accent } else { t.text }, t.panel); }
+                if y < foot { p.clip(a.x, y, a.w, &format!("{} Start at boot: {}   (Space to change)", if f.focus == 6 { ">" } else { " " }, if f.autostart { "yes" } else { "no" }), if f.focus == 6 { t.accent } else { t.text }, t.panel); }
                 p.clip(a.x, foot, a.w, "Tab Next box   Enter Next / Save   Esc Cancel", t.dim, t.panel);
                 if !self.msg.is_empty() { super::draw_note(p, a.x, foot.saturating_sub(1), a.w, &self.msg, t.accent, t.panel, 3); }
             }
@@ -243,15 +243,17 @@ mod tests {
         for _ in 0..40 { key(&mut s, "backspace"); } // the user box starts with $USER: empty it
         key(&mut s, "enter");
         text(&mut s, "A=1;B=two"); key(&mut s, "enter");
+        text(&mut s, "8080 9090/udp"); key(&mut s, "enter");
         key(&mut s, "space"); key(&mut s, "space");   // toggles twice: stays on
         key(&mut s, "enter");
         assert!(s.msg.contains("valid user") || s.msg.contains("user"), "an empty user is refused: {}", s.msg);
-        key(&mut s, "up"); key(&mut s, "up");
-        text(&mut s, "tester"); key(&mut s, "tab"); key(&mut s, "tab"); key(&mut s, "enter");
+        key(&mut s, "up"); key(&mut s, "up"); key(&mut s, "up");
+        text(&mut s, "tester"); key(&mut s, "tab"); key(&mut s, "tab"); key(&mut s, "tab"); key(&mut s, "enter");
         let saved = calls(&w).into_iter().find(|c| c.starts_with("svc-save")).expect("save was sent");
         let d = services::parse_conf(&saved.split(" | ").nth(1).unwrap()).unwrap();
         assert_eq!((d.name.as_str(), d.command.as_str(), d.dir.as_str(), d.user.as_str(), d.autostart), ("mc", "java -jar a.jar", "/srv/mc", "tester", true));
         assert_eq!(d.env, vec![("A".to_string(), "1".to_string()), ("B".to_string(), "two".to_string())]);
+        assert_eq!(d.ports, "8080/tcp,9090/udp");
         assert!(s.state().contains("mode=list"));
     }
 
@@ -259,7 +261,7 @@ mod tests {
     fn bad_input_stays_in_the_form_with_a_message() {
         let (mut s, _w) = app(); settle(&mut s);
         key(&mut s, "n"); text(&mut s, "Bad Name");
-        for _ in 0..6 { key(&mut s, "enter"); }
+        for _ in 0..7 { key(&mut s, "enter"); }
         assert!(s.state().contains("mode=form") && !s.msg.is_empty(), "{}", s.msg);
         key(&mut s, "esc"); assert!(s.state().contains("mode=list"));
     }
