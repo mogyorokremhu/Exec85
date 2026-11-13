@@ -3,17 +3,19 @@
 use super::{edit_text, Application, Backend, Env, Job, Kind, Out};
 use crate::keys::{code, Key};
 use crate::layout::Rect;
-use crate::mc::ram_choices;
+use crate::mc::{ram_choices, ServerType};
 use crate::paint::Painter;
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Step { Versions, Ram, Options, Working, Done }
+enum Step { Type, Versions, Ram, Options, Working, Done }
 
 pub struct Minecraft {
     be: Backend,
     job: Job,
     step: Step,
+    kind: ServerType,
+    type_sel: usize,
     latest: String,
     versions: Vec<String>,
     sel: usize,
@@ -36,7 +38,7 @@ pub fn parse_versions(text: &str) -> (String, Vec<String>) {
 impl Minecraft {
     pub fn new(be: Backend, mem_kb: u64) -> Minecraft {
         let ram = ram_choices(mem_kb).first().copied().unwrap_or(2);
-        Minecraft { be, job: Job::new(), step: Step::Versions, latest: String::new(), versions: vec![], sel: 0, mem_kb, ram, name: "minecraft".into(), eula: false, focus: 0, msg: String::new(), first: true, addr: None }
+        Minecraft { be, job: Job::new(), step: Step::Type, kind: ServerType::Vanilla, type_sel: 0, latest: String::new(), versions: vec![], sel: 0, mem_kb, ram, name: "minecraft".into(), eula: false, focus: 0, msg: String::new(), first: true, addr: None }
     }
 
     pub fn system_memory_kb() -> u64 {
@@ -58,7 +60,7 @@ impl Minecraft {
 
     fn install(&mut self, env: &Env) {
         let user = std::env::var("USER").unwrap_or_default();
-        let words = ["mc-create", &self.name, self.version(), &self.ram.to_string(), if self.eula { "1" } else { "0" }, &user].iter().map(|s| s.to_string()).collect();
+        let words = ["mc-create", &self.name, self.version(), &self.ram.to_string(), if self.eula { "1" } else { "0" }, &user, self.kind.id()].iter().map(|s| s.to_string()).collect();
         if self.job.start(env, &self.be, "create", words) { self.step = Step::Working; self.msg = "Downloading and installing. This can take a few minutes...".into(); }
     }
 }
@@ -69,20 +71,33 @@ impl Application for Minecraft {
     fn interval(&self) -> Option<Duration> { Some(if self.job.busy { Duration::from_millis(400) } else { Duration::from_secs(60) }) }
     fn tick(&mut self, env: &Env) {
         self.finish();
-        if self.first { self.first = false; self.job.start(env, &self.be, "versions", vec!["mc-versions".into()]); self.msg = "Loading the version list from Mojang...".into(); }
+        self.first = false;
     }
 
     fn handle(&mut self, k: Key, env: &Env) -> Out {
         self.finish();
         match self.step {
+            Step::Type => match k.code {
+                code::UP => self.type_sel = self.type_sel.saturating_sub(1),
+                code::DOWN => self.type_sel = (self.type_sel + 1).min(ServerType::ALL.len() - 1),
+                code::ENTER => {
+                    self.kind = ServerType::ALL[self.type_sel];
+                    self.versions.clear(); self.latest.clear(); self.sel = 0;
+                    self.job.start(env, &self.be, "versions", vec!["mc-versions".into(), self.kind.id().into()]);
+                    self.msg = format!("Loading the {} version list...", self.kind.label());
+                    self.step = Step::Versions;
+                }
+                _ => {}
+            },
             Step::Versions => match k.code {
+                code::ESC | code::BACKSPACE => { self.step = Step::Type; self.msg.clear(); }
                 code::UP => self.sel = self.sel.saturating_sub(1),
                 code::DOWN => self.sel = (self.sel + 1).min(self.versions.len().saturating_sub(1)),
                 code::PGUP => self.sel = self.sel.saturating_sub(10),
                 code::PGDN => self.sel = (self.sel + 10).min(self.versions.len().saturating_sub(1)),
                 code::HOME => self.sel = 0,
                 code::ENTER => {
-                    if self.versions.is_empty() { self.job.start(env, &self.be, "versions", vec!["mc-versions".into()]); self.msg = "Loading the version list...".into(); }
+                    if self.versions.is_empty() { self.job.start(env, &self.be, "versions", vec!["mc-versions".into(), self.kind.id().into()]); self.msg = "Loading the version list...".into(); }
                     else if ram_choices(self.mem_kb).is_empty() { self.msg = "This computer has too little memory to run a Minecraft server (it needs at least about 2.5 GB).".into(); }
                     else { self.step = Step::Ram; self.msg.clear(); }
                 }
@@ -109,7 +124,7 @@ impl Application for Minecraft {
                 }
             },
             Step::Working => {}
-            Step::Done => if k.code == code::ENTER || k.code == code::ESC { self.step = Step::Versions; self.msg.clear(); },
+            Step::Done => if k.code == code::ENTER || k.code == code::ESC { self.step = Step::Type; self.msg.clear(); },
         }
         Out::None
     }
@@ -118,23 +133,29 @@ impl Application for Minecraft {
         let t = p.t;
         let foot = a.y + a.h.saturating_sub(1);
         p.text(a.x, a.y, "Minecraft server", t.accent, None);
-        let steps = ["1 Version", "2 Memory", "3 Install"];
-        let cur = match self.step { Step::Versions => 0, Step::Ram => 1, _ => 2 };
+        let steps = ["1 Type", "2 Version", "3 Memory", "4 Install"];
+        let cur = match self.step { Step::Type => 0, Step::Versions => 1, Step::Ram => 2, _ => 3 };
         let mut x = a.x + 18;
         for (i, s) in steps.iter().enumerate() { if x + s.len() < a.x + a.w { p.text(x, a.y, s, if i == cur { t.accent } else { t.dim }, None); } x += s.len() + 2; }
         let body = Rect { x: a.x, y: a.y + 2, w: a.w, h: a.h.saturating_sub(4) };
         match self.step {
+            Step::Type => {
+                p.text(a.x, a.y + 2, "What kind of Minecraft server?", t.dim, None);
+                let items: Vec<String> = ServerType::ALL.iter().map(|k| format!("{:<8} {}", k.label(), k.blurb())).collect();
+                p.list(Rect { x: a.x, y: a.y + 4, w: a.w, h: ServerType::ALL.len().min(body.h.saturating_sub(2)) }, &items, self.type_sel, 0, focused);
+                p.paragraph(a.x, a.y + 8, a.w, "Vanilla and Paper are for playing with friends (Paper adds plugins); Fabric is for mods, which every player must also install.", t.dim, t.panel);
+            }
             Step::Versions => {
-                if self.versions.is_empty() { p.text(a.x, a.y + 2, if self.job.busy { "Loading the version list from Mojang..." } else { "No list yet. Press Enter to try again." }, t.dim, None); }
+                if self.versions.is_empty() { p.text(a.x, a.y + 2, if self.job.busy { "Loading the version list..." } else { "No list yet. Press Enter to try again, Esc to go back." }, t.dim, None); }
                 else {
-                    p.text(a.x, a.y + 2, &format!("Choose a version (the newest is {}):", self.latest), t.dim, None);
+                    p.text(a.x, a.y + 2, &format!("Choose a {} version (the newest is {}):", self.kind.label(), self.latest), t.dim, None);
                     let items: Vec<String> = self.versions.iter().map(|v| if *v == self.latest { format!("{v}   (latest)") } else { v.clone() }).collect();
                     let r = Rect { x: a.x, y: a.y + 3, w: a.w, h: body.h.saturating_sub(1) };
                     p.list(r, &items, self.sel, self.sel.saturating_sub(r.h.saturating_sub(1)), focused);
                 }
             }
             Step::Ram => {
-                p.text(a.x, a.y + 2, &format!("Minecraft {} - how much memory should the server get?", self.version()), t.dim, None);
+                p.text(a.x, a.y + 2, &format!("{} {} - how much memory should the server get?", self.kind.label(), self.version()), t.dim, None);
                 let ok = ram_choices(self.mem_kb);
                 let mut x = a.x + 2;
                 for g in [2u32, 4, 8] {
@@ -157,7 +178,7 @@ impl Application for Minecraft {
                 for l in super::wrap_text("To play from outside your home you must also forward port 25565 on your router. The server starts at every boot and restarts if it crashes.", a.w) { if y < foot.saturating_sub(1) { p.clip(a.x, y, a.w, &l, t.dim, t.panel); y += 1; } }
             }
             Step::Options | Step::Working => {
-                p.text(a.x, a.y + 2, &format!("Minecraft {} with {} GB", self.version(), self.ram), t.text, None);
+                p.text(a.x, a.y + 2, &format!("{} {} with {} GB", self.kind.label(), self.version(), self.ram), t.text, None);
                 p.text(a.x, a.y + 4, "Name of the server", t.dim, None);
                 p.field(a.x, a.y + 5, a.w.min(40), &self.name, self.step == Step::Options && self.focus == 0 && focused, false);
                 p.clip(a.x, a.y + 8, a.w, &format!("[{}] I have read and agree to the Minecraft EULA: https://aka.ms/MinecraftEULA", if self.eula { "x" } else { " " }), if self.step == Step::Options && self.focus == 1 { t.accent } else { t.text }, t.panel);
@@ -165,15 +186,15 @@ impl Application for Minecraft {
                 if self.step == Step::Options && !self.eula { p.paragraph(a.x, a.y + 12, a.w, "Without the tick the server is installed but will not start.", t.dim, t.panel); }
             }
         }
-        let hint = match self.step { Step::Versions => "Up/Down Choose   Enter Next", Step::Ram => "Left/Right or 2 4 8   Enter Next   Esc Back", Step::Options => "Tab Next box   Space Tick   Enter Install   Esc Back", Step::Working => "Please wait...", Step::Done => "Enter Back to the start" };
+        let hint = match self.step { Step::Type => "Up/Down Choose   Enter Next", Step::Versions => "Up/Down Choose   Enter Next   Esc Back", Step::Ram => "Left/Right or 2 4 8   Enter Next   Esc Back", Step::Options => "Tab Next box   Space Tick   Enter Install   Esc Back", Step::Working => "Please wait...", Step::Done => "Enter Back to the start" };
         p.clip(a.x, foot, a.w, hint, t.dim, t.panel);
         if self.step != Step::Done && !self.msg.is_empty() { super::draw_note(p, a.x, foot.saturating_sub(1), a.w, &self.msg, t.accent, t.panel, 3); }
     }
 
     fn state(&self) -> String {
         let n = |s: &str| if s.is_empty() { "-".to_string() } else { s.replace(' ', "_") };
-        let step = match self.step { Step::Versions => "versions", Step::Ram => "ram", Step::Options => "options", Step::Working => "working", Step::Done => "done" };
-        format!("name=minecraft step={step} addr={} versions={} latest={} sel={} ram={} eula={} focus={} busy={} msg={}", n(self.addr.as_deref().unwrap_or("")), self.versions.len(), n(&self.latest), n(self.version()), self.ram, self.eula, self.focus, self.job.busy, n(&self.msg.chars().take(60).collect::<String>()))
+        let step = match self.step { Step::Type => "type", Step::Versions => "versions", Step::Ram => "ram", Step::Options => "options", Step::Working => "working", Step::Done => "done" };
+        format!("name=minecraft step={step} kind={} addr={} versions={} latest={} sel={} ram={} eula={} focus={} busy={} msg={}", self.kind.id(), n(self.addr.as_deref().unwrap_or("")), self.versions.len(), n(&self.latest), n(self.version()), self.ram, self.eula, self.focus, self.job.busy, n(&self.msg.chars().take(60).collect::<String>()))
     }
     fn hint(&self) -> &'static str { "Up/Down Choose   Enter Next   F4 Close" }
 }
@@ -200,6 +221,8 @@ mod tests {
     #[test]
     fn versions_are_listed_newest_first_with_the_latest_marked() {
         let (mut m, _c) = app(16_000_000); settle(&mut m);
+        assert!(m.state().contains("step=type"), "the first question is what kind of server");
+        key(&mut m, "enter");
         assert_eq!((m.latest.as_str(), m.versions.len()), ("1.21.5", 3));
         assert!(m.state().contains("sel=1.21.5") && m.state().contains("step=versions"));
         key(&mut m, "down"); key(&mut m, "down"); key(&mut m, "down");
@@ -209,7 +232,7 @@ mod tests {
     #[test]
     fn only_2_4_or_8_gb_and_only_what_fits() {
         let (mut m, _c) = app(6_000_000); settle(&mut m);
-        key(&mut m, "enter");
+        key(&mut m, "enter"); key(&mut m, "enter");
         assert!(m.state().contains("step=ram") && m.state().contains("ram=2"));
         key(&mut m, "right"); assert_eq!(m.ram, 4);
         key(&mut m, "right"); assert_eq!(m.ram, 4, "8 GB does not fit 6 GB of RAM");
@@ -217,13 +240,14 @@ mod tests {
         key(&mut m, "2"); assert_eq!(m.ram, 2);
         key(&mut m, "left"); assert_eq!(m.ram, 2);
         let (mut small, _c) = app(1_000_000); settle(&mut small);
-        key(&mut small, "enter");
+        key(&mut small, "enter"); key(&mut small, "enter");
         assert!(small.state().contains("step=versions") && small.msg.contains("too little memory"), "{}", small.msg);
     }
 
     #[test]
     fn installing_needs_the_steps_and_passes_the_choices_on() {
         let (mut m, calls) = app(16_000_000); settle(&mut m);
+        key(&mut m, "enter");                                   // Vanilla
         key(&mut m, "down"); key(&mut m, "enter");            // 1.21.4
         key(&mut m, "4"); key(&mut m, "enter");                // 4 GB
         for _ in 0..9 { key(&mut m, "backspace"); }
@@ -232,20 +256,21 @@ mod tests {
         key(&mut m, "enter"); key(&mut m, "enter");            // Install
         assert!(calls.lock().unwrap().iter().any(|c| c.starts_with("mc-create survival 1.21.4 4 1 ")), "{:?}", calls.lock().unwrap());
         assert!(m.state().contains("step=done"), "{}", m.state());
-        key(&mut m, "enter"); assert!(m.state().contains("step=versions"));
+        key(&mut m, "enter"); assert!(m.state().contains("step=type"), "back to the first question");
     }
 
     #[test]
     fn the_eula_is_off_by_default_and_never_ticked_for_you() {
         let (mut m, calls) = app(16_000_000); settle(&mut m);
-        key(&mut m, "enter"); key(&mut m, "enter"); key(&mut m, "enter"); key(&mut m, "enter"); key(&mut m, "enter");
+        for _ in 0..6 { key(&mut m, "enter"); }
         let c = calls.lock().unwrap().iter().find(|c| c.starts_with("mc-create")).cloned().unwrap();
-        assert!(c.starts_with("mc-create minecraft 1.21.5 2 0 "), "{c}");
+        assert!(c.starts_with("mc-create minecraft 1.21.5 2 0 ") && c.ends_with(" vanilla"), "{c}");
     }
 
     #[test]
     fn errors_are_shown_and_a_bad_name_is_refused() {
         let (mut m, _c) = app(16_000_000); settle(&mut m);
+        key(&mut m, "enter");
         key(&mut m, "down"); key(&mut m, "down"); key(&mut m, "enter"); key(&mut m, "enter");   // 1.8.9, 2 GB
         for _ in 0..12 { key(&mut m, "backspace"); }
         text(&mut m, "Bad Name"); for _ in 0..3 { key(&mut m, "enter"); }
@@ -256,14 +281,30 @@ mod tests {
     }
 
     #[test]
+    fn the_server_type_decides_which_list_and_which_download_is_asked_for() {
+        let (mut m, calls) = app(16_000_000); settle(&mut m);
+        key(&mut m, "down"); key(&mut m, "enter");                      // Paper
+        assert!(m.state().contains("kind=paper") && m.state().contains("step=versions"));
+        assert!(calls.lock().unwrap().contains(&"mc-versions paper".to_string()), "{:?}", calls.lock().unwrap());
+        key(&mut m, "esc"); assert!(m.state().contains("step=type"), "Esc goes back to the first question");
+        key(&mut m, "down"); key(&mut m, "enter");                      // Fabric
+        assert!(m.state().contains("kind=fabric") && calls.lock().unwrap().contains(&"mc-versions fabric".to_string()));
+        key(&mut m, "enter"); key(&mut m, "enter");                     // version, memory
+        key(&mut m, "enter");                                           // name -> the EULA box
+        key(&mut m, "space"); key(&mut m, "enter"); key(&mut m, "enter");   // tick it, then Install
+        let c = calls.lock().unwrap().iter().find(|c| c.starts_with("mc-create")).cloned().unwrap();
+        assert!(c.ends_with(" fabric") && c.contains(" 1 "), "{c}");
+    }
+
+    #[test]
     fn the_version_list_can_be_retried_and_everything_draws() {
         use crate::gfx::{Canvas, Metrics, Mode, Theme};
         let be: Backend = Arc::new(|_| Err("The download failed.".into()));
-        let mut m = Minecraft::new(be, 16_000_000); settle(&mut m);
+        let mut m = Minecraft::new(be, 16_000_000); settle(&mut m); key(&mut m, "enter");
         assert!(m.msg.contains("failed"));
         let (mut m2, _c) = app(16_000_000); settle(&mut m2);
-        for step in 0..4 {
-            match step { 1 => key(&mut m2, "enter"), 2 => key(&mut m2, "enter"), 3 => { key(&mut m2, "enter"); key(&mut m2, "enter"); } _ => {} }
+        for step in 0..5 {
+            match step { 1 => key(&mut m2, "enter"), 2 => key(&mut m2, "enter"), 3 => key(&mut m2, "enter"), 4 => { key(&mut m2, "enter"); key(&mut m2, "enter"); } _ => {} }
             for mm in [&m, &m2] { for (w, h) in [(8usize, 4usize), (40, 12), (100, 36)] {
                 let mut c = Canvas::new(1280, 800);
                 let mut p = Painter { c: &mut c, m: Metrics::for_height(800), t: Theme::new(Mode::Dark) };

@@ -1,7 +1,7 @@
 # Installer music (placeholder)
 
 `installer.mp3` is background music for the installer ("Mii Maker - Wii U Nostalgia"), supplied by the project owner
-as a temporary choice because it fits the look. **It is third-party music and is not licensed for redistribution.**
+as a temporary choice because they like how it sounds (only the music has this style; the interface does not). **It is third-party music and is not licensed for redistribution.**
 
 Before the project is made public (milestone 7):
 - replace it with music we have the right to ship (own work, or a license that allows redistribution);
