@@ -28,6 +28,13 @@ pub fn parse_gateway(s: &str) -> Option<String> {
     s.lines().find(|l| l.starts_with("default")).and_then(|l| l.split_whitespace().skip_while(|w| *w != "via").nth(1)).map(String::from)
 }
 
+/// The address of this computer on the local network (the first non-loopback IPv4 address), from `ip -4 -o addr` output.
+pub fn first_local_ip(ip_output: &str) -> Option<String> {
+    parse_ip_addr(ip_output).into_iter().filter(|(n, _)| n != "lo").flat_map(|(_, v)| v).find(|a| !a.contains(':')).map(|a| a.split('/').next().unwrap_or("").to_string()).filter(|a| !a.is_empty())
+}
+
+pub fn local_ip() -> Option<String> { first_local_ip(&run("ip", &["-4", "-o", "addr"])) }
+
 pub fn parse_dns(s: &str) -> Vec<String> {
     s.lines().filter_map(|l| l.strip_prefix("nameserver")).map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
 }
@@ -106,6 +113,13 @@ mod tests {
         assert_eq!(parse_gateway("10.0.2.0/24 dev eth0\n"), None);
         assert_eq!(parse_dns("search lan\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n"), vec!["1.1.1.1", "8.8.8.8"]);
     }
+    #[test]
+    fn finds_this_computers_address() {
+        assert_eq!(first_local_ip("1: lo    inet 127.0.0.1/8 scope host lo\n2: eth0    inet 192.168.1.20/24 brd 192.168.1.255 scope global eth0\n"), Some("192.168.1.20".into()));
+        assert_eq!(first_local_ip("1: lo    inet 127.0.0.1/8 scope host lo\n"), None, "only the loopback address: no network address yet");
+        assert_eq!(first_local_ip(""), None);
+    }
+
     #[test]
     fn draws_and_reports_state() {
         use crate::gfx::{Canvas, Metrics, Mode, Theme};

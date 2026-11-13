@@ -24,6 +24,8 @@ pub struct Minecraft {
     focus: usize, // on the options screen: 0 name, 1 EULA box, 2 install
     msg: String,
     first: bool,
+    /// This computer's address on the local network, for telling players where to connect.
+    addr: Option<String>,
 }
 
 pub fn parse_versions(text: &str) -> (String, Vec<String>) {
@@ -34,7 +36,7 @@ pub fn parse_versions(text: &str) -> (String, Vec<String>) {
 impl Minecraft {
     pub fn new(be: Backend, mem_kb: u64) -> Minecraft {
         let ram = ram_choices(mem_kb).first().copied().unwrap_or(2);
-        Minecraft { be, job: Job::new(), step: Step::Versions, latest: String::new(), versions: vec![], sel: 0, mem_kb, ram, name: "minecraft".into(), eula: false, focus: 0, msg: String::new(), first: true }
+        Minecraft { be, job: Job::new(), step: Step::Versions, latest: String::new(), versions: vec![], sel: 0, mem_kb, ram, name: "minecraft".into(), eula: false, focus: 0, msg: String::new(), first: true, addr: None }
     }
 
     pub fn system_memory_kb() -> u64 {
@@ -48,7 +50,7 @@ impl Minecraft {
         match (tag.as_str(), r) {
             ("versions", Ok(t)) => { let (l, v) = parse_versions(&t); self.latest = l; self.versions = v; self.sel = 0; self.msg.clear(); }
             ("versions", Err(e)) => self.msg = e,
-            ("create", Ok(m)) => { self.step = Step::Done; self.msg = m; }
+            ("create", Ok(m)) => { self.step = Step::Done; self.msg = m; self.addr = super::network::local_ip(); }
             ("create", Err(e)) => { self.step = Step::Options; self.msg = e; }
             _ => {}
         }
@@ -144,7 +146,17 @@ impl Application for Minecraft {
                 }
                 p.text(a.x, a.y + 7, &format!("This computer has {:.1} GB. A bit more than the chosen amount is used in total.", self.mem_kb as f64 / 1_048_576.0), t.dim, None);
             }
-            Step::Options | Step::Working | Step::Done => {
+            Step::Done => {
+                p.text(a.x, a.y + 2, "Your Minecraft server is ready", t.accent, None);
+                let mut y = a.y + 4;
+                for l in super::wrap_text(&self.msg, a.w) { if y < foot.saturating_sub(1) { p.clip(a.x, y, a.w, &l, t.text, t.panel); y += 1; } }
+                y += 1;
+                let line = match &self.addr { Some(ip) => format!("Players on your network connect to:  {ip}:25565"), None => "Players connect to this computer's address, port 25565.".to_string() };
+                for l in super::wrap_text(&line, a.w) { if y < foot.saturating_sub(1) { p.clip(a.x, y, a.w, &l, t.accent, t.panel); y += 1; } }
+                y += 1;
+                for l in super::wrap_text("To play from outside your home you must also forward port 25565 on your router. The server starts at every boot and restarts if it crashes.", a.w) { if y < foot.saturating_sub(1) { p.clip(a.x, y, a.w, &l, t.dim, t.panel); y += 1; } }
+            }
+            Step::Options | Step::Working => {
                 p.text(a.x, a.y + 2, &format!("Minecraft {} with {} GB", self.version(), self.ram), t.text, None);
                 p.text(a.x, a.y + 4, "Name of the server", t.dim, None);
                 p.field(a.x, a.y + 5, a.w.min(40), &self.name, self.step == Step::Options && self.focus == 0 && focused, false);
@@ -154,14 +166,14 @@ impl Application for Minecraft {
             }
         }
         let hint = match self.step { Step::Versions => "Up/Down Choose   Enter Next", Step::Ram => "Left/Right or 2 4 8   Enter Next   Esc Back", Step::Options => "Tab Next box   Space Tick   Enter Install   Esc Back", Step::Working => "Please wait...", Step::Done => "Enter Back to the start" };
-        p.clip(a.x, foot.saturating_sub(1), a.w, &self.msg, t.accent, t.panel);
         p.clip(a.x, foot, a.w, hint, t.dim, t.panel);
+        if self.step != Step::Done && !self.msg.is_empty() { super::draw_note(p, a.x, foot.saturating_sub(1), a.w, &self.msg, t.accent, t.panel, 3); }
     }
 
     fn state(&self) -> String {
         let n = |s: &str| if s.is_empty() { "-".to_string() } else { s.replace(' ', "_") };
         let step = match self.step { Step::Versions => "versions", Step::Ram => "ram", Step::Options => "options", Step::Working => "working", Step::Done => "done" };
-        format!("name=minecraft step={step} versions={} latest={} sel={} ram={} eula={} focus={} busy={} msg={}", self.versions.len(), n(&self.latest), n(self.version()), self.ram, self.eula, self.focus, self.job.busy, n(&self.msg.chars().take(60).collect::<String>()))
+        format!("name=minecraft step={step} addr={} versions={} latest={} sel={} ram={} eula={} focus={} busy={} msg={}", n(self.addr.as_deref().unwrap_or("")), self.versions.len(), n(&self.latest), n(self.version()), self.ram, self.eula, self.focus, self.job.busy, n(&self.msg.chars().take(60).collect::<String>()))
     }
     fn hint(&self) -> &'static str { "Up/Down Choose   Enter Next   F4 Close" }
 }

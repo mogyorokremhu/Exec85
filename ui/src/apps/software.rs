@@ -127,7 +127,8 @@ impl Application for Software {
             Mode::Browse => {}
         }
         let hint = "S Search  I Install  X Remove  U Refresh list  G Update all  Tab Switch";
-        p.clip(a.x, foot, a.w, if self.msg.is_empty() { hint } else { &self.msg }, if self.msg.is_empty() { t.dim } else { t.accent }, t.panel);
+        p.clip(a.x, foot, a.w, hint, t.dim, t.panel);
+        if !self.msg.is_empty() { super::draw_note(p, a.x, foot.saturating_sub(1), a.w, &self.msg, t.accent, t.panel, 3); }
     }
 
     fn state(&self) -> String {

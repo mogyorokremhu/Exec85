@@ -159,7 +159,8 @@ impl Application for Services {
                     y += 3;
                 }
                 if y < foot { p.clip(a.x, y, a.w, &format!("{} Start at boot: {}   (Space to change)", if f.focus == 5 { ">" } else { " " }, if f.autostart { "yes" } else { "no" }), if f.focus == 5 { t.accent } else { t.text }, t.panel); }
-                p.clip(a.x, foot, a.w, if self.msg.is_empty() { "Tab Next box   Enter Next / Save   Esc Cancel" } else { &self.msg }, if self.msg.is_empty() { t.dim } else { t.accent }, t.panel);
+                p.clip(a.x, foot, a.w, "Tab Next box   Enter Next / Save   Esc Cancel", t.dim, t.panel);
+                if !self.msg.is_empty() { super::draw_note(p, a.x, foot.saturating_sub(1), a.w, &self.msg, t.accent, t.panel, 3); }
             }
             Mode::Log(name, lines) => {
                 p.text(a.x, a.y, &format!("Log of {name}"), t.accent, None);
@@ -177,7 +178,8 @@ impl Application for Services {
                 p.list(Rect { x: a.x, y: a.y + 2, w: a.w, h }, &items, self.sel, top, focused);
                 if let Mode::ConfirmRemove(n) = &self.mode { p.clip(a.x, foot - 1, a.w, &format!("Remove {n}? It will be stopped.  [Y] Yes   [N] No"), t.accent, t.panel); }
                 let hint = "N New  E Edit  S Start  X Stop  R Restart  D Delete  L Log";
-                p.clip(a.x, foot, a.w, if self.msg.is_empty() { hint } else { &self.msg }, if self.msg.is_empty() { t.dim } else { t.accent }, t.panel);
+                p.clip(a.x, foot, a.w, hint, t.dim, t.panel);
+                if !self.msg.is_empty() { super::draw_note(p, a.x, foot.saturating_sub(1), a.w, &self.msg, t.accent, t.panel, 3); }
             }
         }
     }
