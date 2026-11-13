@@ -16,6 +16,7 @@ pub struct Display {
     pub height: usize,
     stride_px: usize,
     pub kind: &'static str,
+    fb_id: u32,   // the DRM framebuffer (0 for the old fbdev)
 }
 
 impl Display {
@@ -35,6 +36,8 @@ impl Display {
                 std::ptr::copy_nonoverlapping(c.px.as_ptr().add(y * c.w), self.map.add(y * self.stride_px), w);
             }
         }
+        // Some drivers (VirtualBox, VMware, USB displays) only show what we drew after being told the picture changed.
+        if self.fb_id != 0 { drm::dirty(self._file.as_raw_fd(), self.fb_id); }
     }
 }
 
@@ -66,6 +69,12 @@ mod drm {
     struct CreateDumb { height: u32, width: u32, bpp: u32, flags: u32, handle: u32, pitch: u32, size: u64 }
     #[derive(Default)] #[repr(C)]
     struct MapDumb { handle: u32, pad: u32, offset: u64 }
+
+    #[derive(Default)] #[repr(C)]
+    struct DirtyCmd { fb_id: u32, flags: u32, color: u32, num_clips: u32, clips_ptr: u64 }
+    pub const DIRTYFB: c_ulong = iowr(0xB1, std::mem::size_of::<DirtyCmd>());
+    /// "The whole framebuffer changed." Drivers that do not need this just answer with an error, which we ignore.
+    pub fn dirty(fd: i32, fb_id: u32) { let mut d = DirtyCmd { fb_id, ..Default::default() }; let _ = ioctl_ptr(fd, DIRTYFB, &mut d); }
 
     pub const GETRESOURCES: c_ulong = iowr(0xA0, std::mem::size_of::<CardRes>());
     #[allow(dead_code)]
@@ -146,7 +155,7 @@ mod drm {
             let map = map_shared(fd, md.offset, cd.size as usize)?;
             let mut set = Crtc { set_conn_ptr: &cid as *const u32 as u64, n_conn: 1, crtc_id, fb_id: fb.fb_id, mode_valid: 1, mode, ..Default::default() };
             ioctl_ptr(fd, SETCRTC, &mut set)?;
-            return Ok(Display { _file: file, map, width: w as usize, height: h as usize, stride_px: cd.pitch as usize / 4, kind: "drm" });
+            return Ok(Display { _file: file, map, width: w as usize, height: h as usize, stride_px: cd.pitch as usize / 4, kind: "drm", fb_id: fb.fb_id });
         }
         Err(err("no connected display found"))
     }
@@ -164,6 +173,7 @@ mod drm {
             assert_eq!(ADDFB, 0xC01C64AE);
             assert_eq!(CREATE_DUMB, 0xC02064B2);
             assert_eq!(MAP_DUMB, 0xC01064B3);
+            assert_eq!(DIRTYFB, 0xC01864B1);
             assert_eq!(std::mem::size_of::<ModeInfo>(), 68);
         }
     }
@@ -186,6 +196,6 @@ mod fbdev {
         let (len, line) = (u32at(&fix, 24) as usize, u32at(&fix, 48) as usize);
         if bpp != 32 { return Err(io::Error::new(io::ErrorKind::Other, format!("framebuffer is {bpp} bpp, need 32"))); }
         let map = map_shared(fd, 0, len)?;
-        Ok(Display { _file: file, map, width: w, height: h, stride_px: line / 4, kind: "fbdev" })
+        Ok(Display { _file: file, map, width: w, height: h, stride_px: line / 4, kind: "fbdev", fb_id: 0 })
     }
 }
