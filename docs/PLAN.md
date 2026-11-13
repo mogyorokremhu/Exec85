@@ -387,6 +387,9 @@ Syncthing, Forgejo, ad blocker, media server.
    on reaching it through the VPN); the screen explains which option you chose and what is missing.
 
 ### M7. Public release
+**Before going public:** replace the installer music (`image/assets/audio/installer.mp3` is third-party and not licensed for
+redistribution) and remove it from the git history; see `image/assets/audio/README.md`.
+
 Release workflow, signed checksums, install instructions (`docs/INSTALL.md`),
 USB-writing guide for Windows, Linux and macOS, license and third-party
 notices, then the repo goes public.

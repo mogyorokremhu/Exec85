@@ -82,6 +82,8 @@ impl Picker {
 }
 
 pub struct Installer {
+    /// Background music: None = there is none, Some(true) = playing, Some(false) = switched off (F8).
+    pub music: Option<bool>,
     pub cols: usize,
     pub rows: usize,
     pub step: Step,
@@ -136,7 +138,7 @@ impl Installer {
         theme.sel = if mode == Mode::Light { 1 } else { 0 };
         let kb_items = Layout::ALL.iter().map(|l| format!("{} ({})", l.label(), l.id())).collect();
         Installer {
-            cols, rows, step: Step::Welcome, mode, layout: Layout::Us,
+            music: None, cols, rows, step: Step::Welcome, mode, layout: Layout::Us,
             welcome: Picker::new(vec!["Install Exec85 on this computer".into(), "Try Exec85 without installing".into()], false),
             theme, kb: Picker::new(kb_items, true), tz, disk_pk: Picker::new(vec![], false), disks: vec![],
             hostname: "exec85".into(), username: String::new(), pw1: String::new(), pw2: String::new(), pw_field: 0, empty_warned: false,
@@ -353,11 +355,11 @@ impl Installer {
         let (sel, filter) = self.picker_ref().map_or(("-".to_string(), "-".to_string()), |pk| (clean(pk.current_text().unwrap_or("")), clean(&pk.filter)));
         let result = match (&p.result, &self.failed) { (None, None) => "none", (Some(Ok(())), _) => "ok", _ => "failed" };
         format!(
-            "EXEC85_INSTALLER step={} theme={} layout={} tz={} host={} user={} pw={} disk={} filter={} sel={} field={} error={} progress={}/{} result={}",
+            "EXEC85_INSTALLER step={} theme={} layout={} tz={} host={} user={} pw={} disk={} filter={} sel={} field={} error={} progress={}/{} result={} music={}",
             self.step.name(), if self.mode == Mode::Dark { "dark" } else { "light" }, self.layout.id(), clean(self.selected_tz()),
             clean(&self.hostname), clean(&self.username), if self.pw1.is_empty() { "empty" } else { "set" },
             clean(self.selected_disk().map_or("", |d| d.name.as_str())), filter, sel, self.pw_field,
-            self.error.as_deref().map_or("none".to_string(), clean), p.done, p.total, result,
+            self.error.as_deref().map_or("none".to_string(), clean), p.done, p.total, result, match self.music { None => "none", Some(true) => "on", Some(false) => "off" },
         )
     }
 }
@@ -509,7 +511,8 @@ pub fn draw(inst: &Installer, c: &mut Canvas, m: &Metrics) {
         Step::Installing => "Installing...",
         Step::Done => "Enter Continue",
     };
-    p.clip(1, y, cols.saturating_sub(2), hint, t.bar_text, t.bar);
+    let hint = match inst.music { Some(on) => format!("{hint}   F8 Music {}", if on { "on" } else { "off" }), None => hint.to_string() };
+    p.clip(1, y, cols.saturating_sub(2), &hint, t.bar_text, t.bar);
 }
 
 fn list(p: &mut Painter, inst: &Installer, la: Rect) {
@@ -790,7 +793,7 @@ mod tests {
         press(&mut i, "enter");
         i.poll();
         assert_eq!((i.step, i.failed.as_deref()), (Step::Done, Some("boom")));
-        assert!(i.state_line().ends_with("result=failed"));
+        assert!(i.state_line().contains("result=failed"));
         assert!(press(&mut i, "enter").is_empty());
         assert_eq!(i.step, Step::Disk);
     }

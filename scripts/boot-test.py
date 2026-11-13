@@ -174,7 +174,7 @@ def typed(vm, keys, prefix, **final):
 
 
 def scenario_live():
-    vm = VM("live", cdrom=iso)
+    vm = VM("live", cdrom=iso, extra=["-audiodev", "none,id=snd0", "-device", "intel-hda", "-device", "hda-duplex,audiodev=snd0"])
     try:
         m = vm.wait_for(r"EXEC85_READY uptime=([\d.]+)", 600 if SLOW else 120)
         step("live: first screen drawn", m is not None, "no EXEC85_READY on serial")
@@ -189,6 +189,10 @@ def scenario_live():
         step("live: idle memory report", mm is not None)
         result.update(mem_total_kb=int(mm[1]), mem_used_kb=int(mm[2]), exec85_rss_kb=int(mm[3]))
         step("live: installer welcome screen (dark)", bar_pixel(vm.screenshot("1-welcome")) == DARK["bar"])
+        d = vm.wait_line("EXEC85_INSTALLER", lambda d: d.get("music") in ("on", "off"), 30)
+        step("live: the installer plays its music when there is a sound card", d is not None and d.get("music") == "on", str(vm.lines("EXEC85_INSTALLER")[-1:]))
+        press(vm, "f8", "EXEC85_INSTALLER", music="off")
+        press(vm, "f8", "EXEC85_INSTALLER", music="on")
 
         # Welcome -> "Try Exec85 without installing" -> the shell, as root
         n = len(vm.lines("EXEC85_INSTALLER"))

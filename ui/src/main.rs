@@ -5,6 +5,7 @@
 //!   --shell      the file-browser shell
 //!   --ppm FILE   draw the shell into an image file (testing)
 mod account;
+mod audio;
 mod app;
 mod apps;
 mod cmds;
@@ -211,6 +212,9 @@ fn stage_installer() -> ! {
     let testing = supervisor::cmdline_has("exec85.testing");
     let mut inst = installer::Installer::new(cols, rows, system_mode(), installer::load_timezones(Path::new("/usr/share/zoneinfo")), testing, Box::new(disks::system_disks), runner);
 
+    // Music while installing, if the computer has a sound card (F8 switches it off and on).
+    let mut music = audio::Music::start_default();
+    inst.music = music.as_ref().map(|m| !m.paused());
     installer::draw(&inst, &mut s.canvas, &s.m);
     s.show();
     announce("installer", &s);
@@ -221,6 +225,7 @@ fn stage_installer() -> ! {
         while let Ok(e) = rx.try_recv() { events.push(e); }
         for e in events {
             match e {
+                Event::Key(k) if k.code == keys::code::F8 => { if let Some(m) = music.as_mut() { m.toggle(); inst.music = Some(!m.paused()); } }
                 Event::Key(k) => match inst.handle(k) {
                     Some(installer::Outcome::Reboot) => std::process::exit(supervisor::EXIT_REBOOT),
                     Some(installer::Outcome::Live) => std::process::exit(supervisor::EXIT_TRY_LIVE),
