@@ -1,6 +1,6 @@
 [package]
 name = "exec85"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Exec85 interface: draws straight to the screen (DRM/framebuffer), no X11/Wayland"
 license = "MIT"

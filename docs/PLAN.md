@@ -387,7 +387,7 @@ Syncthing, Forgejo, ad blocker, media server.
    on reaching it through the VPN); the screen explains which option you chose and what is missing.
 
 ### Release plan after v0.7.0 (decided; order inside a release can change)
-**v0.8.0 - "everyday server"**
+**v0.8.0 - "everyday server"** (released: Minecraft EULA button, firewall, SSH, network settings and Wi-Fi, App catalog with website / Syncthing / Transmission; the items marked *moved* went to v0.8.5)
 - Minecraft: an "Accept the EULA and start" button on the done screen, clearer messages for too little memory or a failed download.
 - The quick installers become *recipes* (see M6.5), plus an **App catalog** screen: one place that lists every installer, what it needs (memory, disk, network), and whether it is installed.
 - Remote access, first part: **SSH server** (key-only by default) and the **firewall** (default: refuse incoming; each installer opens only its own port).
@@ -400,17 +400,18 @@ Syncthing, Forgejo, ad blocker, media server.
 - **Users**: add or remove users and change passwords from a screen (with the wheel/administrator choice made explicit).
 - **Scheduled tasks**: a simple screen for "run this command every night / every hour".
 - **Log viewer**: read the system's and any service's log in one place, with search.
-Honest note: this is a lot. If it grows too big, the last items move to a v0.8.5 release rather than being rushed.
+Honest note: this was a lot, so the rest moved to a **v0.8.5** release rather than being rushed:
+**v0.8.5 - "the rest of everyday"** *(moved from v0.8.0)*: file sharing (Samba), PostgreSQL / MariaDB, print server (CUPS), the extra game servers (Terraria, Factorio, Valheim, Bedrock), `exec85.local`, disk health and temperature, scheduled backups, user management, scheduled tasks, log viewer.
 
 **v0.9.0 - "reach it from anywhere"**: Git server (Forgejo), **WireGuard** VPN, **Wake-on-LAN**, **dynamic DNS** (DuckDNS), **reverse proxy with HTTPS** (Caddy), the ad blocker (DNS blocker), the media server (Navidrome + MiniDLNA), Home Assistant (with a clear memory warning).
 
 **v0.10.0 - "look after itself"**: **web dashboard**, **automatic updates** (software and Exec85 itself, with a fallback boot entry), the **uptime monitor with alerts** (Discord webhook / ntfy), **Vaultwarden**.
 
-**Whenever the laptop arrives**: real-hardware testing (drivers, Wi-Fi, 4 TB GPT disk, lid-close, real numbers), the Debian comparison, and replacing the placeholder installer music.
+**Whenever the laptop arrives**: real-hardware testing (drivers, Wi-Fi, 4 TB GPT disk, lid-close, real numbers), the Debian comparison.
 
 ### M7. Public release
-**Before going public:** replace the installer music (`image/assets/audio/installer.mp3` is third-party and not licensed for
-redistribution) and remove it from the git history; see `image/assets/audio/README.md`.
+**Before going public:** the installer music is now our own (v0.8.0), but the earlier third-party song is still in the git history:
+clean the history (or publish from a fresh one); see `image/assets/audio/README.md`.
 
 Release workflow, signed checksums, install instructions (`docs/INSTALL.md`),
 USB-writing guide for Windows, Linux and macOS, license and third-party
