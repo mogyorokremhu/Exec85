@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+# Exec85 sets the network up itself (exec85 --net-apply at boot). This stands in for OpenRC's "net" service, so that
+# programs such as nginx, Samba or SSH, whose own start scripts say "need net", are allowed to start.
+description="Exec85 network (set up by exec85 --net-apply)"
+
+depend() {
+	provide net
+	need localmount
+	after exec85-firewall
+}
+
+start() {
+	return 0
+}
