@@ -664,6 +664,19 @@ def scenario_testing():
             except AssertionError:
                 dump_file(vm, f"/tmp/{kind}.txt", 6)
                 raise
+
+        # Discord bots, Python and Node.js, installed for real with a fake token: the real library must run and refuse the token
+        FAKE = "fake-token-for-tests-only-0123456789"
+        for lang, name, needle, tag in (("python", "pybot", "Improper token", "D1"), ("node", "jsbot", "invalid token", "D2")):
+            terminal_run(vm, f"export DISCORD_TOKEN={FAKE}; bot create {name} {lang} > /tmp/{name}.txt 2>&1; echo B{tag}$((5-3))", f"B{tag}2", 900, f"bot: the {lang} bot install command finishes")
+            try: terminal_run(vm, f"sleep 30; grep -c '{needle}' /var/log/exec85/{name}.log; echo C{tag}$((5-3))", f"re:[1-9]\\d*C{tag}2", 240, f"bot: the {lang} bot runs and the Discord library refuses the fake token")
+            except AssertionError:
+                dump_file(vm, f"/tmp/{name}.txt", 6)
+                terminal_run(vm, f"tail -3 /var/log/exec85/{name}.log | cut -c1-66; echo L{tag}$((5-3))", f"L{tag}2", 20, "diagnostic")
+                print("BOTLOG>", app_line(vm, "terminal", 1), flush=True)
+                raise
+            terminal_run(vm, f"ls -l /srv/bots/{name}/.env | cut -c1-10", "-rw-------", 30, f"bot: the {lang} bot's token file is private")
+            terminal_run(vm, f"svc stop {name}; echo S{tag}$((5-3))", f"S{tag}2", 60, f"bot: the {lang} bot can be stopped")
     finally:
         vm.stop()
 
