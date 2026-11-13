@@ -92,6 +92,15 @@ fn website(ctx: &Ctx, r: &Recipe, v: &[(String, String)], user: &str) -> Result<
     let index = dir.join("index.html");
     if !index.exists() { std::fs::write(&index, "<!doctype html>\n<meta charset=\"utf-8\"><title>It works</title>\n<h1>It works</h1>\n<p>This page is served by your Exec85 computer. Put your own pages in this folder.</p>\n").map_err(|e| e.to_string())?; std::fs::set_permissions(&index, std::fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string())?; }
     run_ok(ctx, "Giving the folder to the user", "chown", &["-R", user, &dir.to_string_lossy()])?;
+    // nginx runs as its own user: it must be able to walk through every folder on the way (in a private home folder it cannot),
+    // so those get "others may enter" (not "others may list or read"), and the pages themselves must be readable.
+    let home = ctx.root.join("home");
+    if dir.starts_with(&home) {
+        for p in dir.ancestors().take_while(|p| p.starts_with(&home) && *p != home) {
+            if let Ok(md) = std::fs::metadata(p) { let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(md.permissions().mode() | 0o001)); }
+        }
+    }
+    run_ok(ctx, "Making the pages readable", "chmod", &["-R", "a+rX", &dir.to_string_lossy()])?;
     let conf_dir = ctx.root.join("etc/nginx/http.d");
     std::fs::create_dir_all(&conf_dir).map_err(|e| e.to_string())?;
     let conf = conf_dir.join("default.conf");

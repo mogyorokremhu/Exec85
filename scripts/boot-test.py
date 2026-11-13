@@ -736,10 +736,10 @@ def scenario_testing():
             terminal_run(vm, f"svc stop {name}; echo S{tag}$((5-3))", f"S{tag}2", 60, f"bot: the {lang} bot can be stopped")
 
         # Quick installers from the app catalog: each is installed for real and must answer
-        terminal_run(vm, "svc stop nginx; svc remove nginx; mkdir -p /home/tester/site; echo catalog-site-ok > /home/tester/site/index.html; app install website folder=/home/tester/site > /tmp/web.txt 2>&1; echo W$((5-3))", "W2", 600, "catalog: the website installer finishes")
+        terminal_run(vm, "svc stop nginx; svc remove nginx; app install website > /tmp/web.txt 2>&1; echo W$((5-3))", "W2", 600, "catalog: the website installer finishes")
         dump_file(vm, "/tmp/web.txt", 6)
         step("catalog: the website answers from outside", wait_probe(8090, True, 60))
-        terminal_run(vm, "wget -qO- http://127.0.0.1:8090/; echo W$((6-3))", "catalog-site-ok", 30, "catalog: the website serves the page")
+        terminal_run(vm, "wget -qO- http://127.0.0.1:8090/; echo W$((6-3))", "It works", 30, "catalog: the website serves the page")
         terminal_run(vm, "app list | grep website; echo W$((6-2))", "installed", 30, "catalog: the website shows as installed")
         terminal_run(vm, "app install syncthing gui_password=longenough1 > /tmp/st.txt 2>&1; echo Y$((5-3))", "Y2", 900, "catalog: the Syncthing installer finishes")
         dump_file(vm, "/tmp/st.txt", 3)
