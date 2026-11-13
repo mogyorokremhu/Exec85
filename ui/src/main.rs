@@ -31,6 +31,7 @@ mod splash;
 mod supervisor;
 mod helper;
 mod services;
+mod ssh;
 mod sys;
 mod usb;
 mod ui;
@@ -383,7 +384,7 @@ fn main() {
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
         Some("--helperd") => helper::serve(),
-        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") | Some("--bot") | Some("--fw") => std::process::exit(helper::cli(&args[1..])),
+        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") | Some("--bot") | Some("--fw") | Some("--ssh") => std::process::exit(helper::cli(&args[1..])),
         None => supervisor::run(),
         Some(other) => { eprintln!("unknown option {other}; try --version"); std::process::exit(2); }
     }

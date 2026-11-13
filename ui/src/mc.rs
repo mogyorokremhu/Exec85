@@ -343,6 +343,23 @@ pub fn ensure_java(ctx: &Ctx, major: u32) -> Result<String, String> {
     Ok(rel(&dest.join("bin/java")))
 }
 
+/// "Accept the EULA and start": for a server that was installed without the tick. Only the person at the keyboard can ask for this;
+/// the file is changed and the service is set to start at boot and started.
+pub fn accept_eula(ctx: &Ctx, name: &str) -> Result<String, String> {
+    services::valid_name(name).map_err(String::from)?;
+    let dir = ctx.root.join("srv/minecraft").join(name);
+    let eula = dir.join("eula.txt");
+    if !eula.exists() { return Err(format!("There is no Minecraft server called {name}.")); }
+    std::fs::write(&eula, eula_text(true)).map_err(|e| e.to_string())?;
+    let owner = std::fs::read_to_string(ctx.root.join("etc/exec85/services").join(format!("{name}.conf"))).ok().and_then(|t| services::parse_conf(&t)).ok_or("The server's service is missing.")?;
+    let (code, out) = ctx.runner.run("chown", &[&owner.user, &eula.to_string_lossy()]);
+    if code != 0 { return Err(format!("Could not update the EULA file: {}", out.trim())); }
+    let def = ServiceDef { autostart: true, ..owner };
+    crate::helper::handle(ctx, &["svc-save".to_string(), services::render_conf(&def)])?;
+    crate::helper::handle(ctx, &["svc-start".to_string(), name.to_string()])?;
+    Ok(format!("The EULA is accepted and {name} is starting (it takes a minute)."))
+}
+
 pub struct Create<'a> { pub kind: ServerType, pub name: &'a str, pub version: &'a str, pub ram_gb: u32, pub eula: bool, pub user: &'a str }
 
 /// Download the server, install its Java and define (and, with the EULA accepted, start) the service.
@@ -541,6 +558,20 @@ mod tests {
         assert!(parse_adoptium(&good.replace(&"c".repeat(64), "short")).is_err());
         assert!(allowed_java_url("https://github.com/adoptium/temurin25-binaries/x") && allowed_java_url(&adoptium_api(25)));
         for bad in ["https://github.com/evil/x", "http://api.adoptium.net/x", "https://api.adoptium.net.evil.example/x", "https://github.com/adoptium/../x"] { assert!(!allowed_java_url(bad), "{bad}"); }
+    }
+
+    #[test]
+    fn a_server_installed_without_the_tick_can_be_accepted_and_started_later() {
+        let r = world("accept", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+        create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 2, eula: false, user: "tester" }).unwrap();
+        assert!(!f.calls.borrow().iter().any(|c| c.contains("rc-service exec85-mc start")));
+        let msg = accept_eula(&ctx, "mc").unwrap();
+        assert!(msg.contains("starting"), "{msg}");
+        assert!(std::fs::read_to_string(r.join("srv/minecraft/mc/eula.txt")).unwrap().ends_with("eula=true\n"));
+        assert!(std::fs::read_to_string(r.join("etc/exec85/services/mc.conf")).unwrap().contains("autostart=true"), "it now starts at every boot");
+        assert!(f.calls.borrow().iter().any(|c| c.contains("rc-service exec85-mc start")));
+        assert!(accept_eula(&ctx, "nosuch").is_err() && accept_eula(&ctx, "../x").is_err());
+        let _ = std::fs::remove_dir_all(&r);
     }
 
     #[test]

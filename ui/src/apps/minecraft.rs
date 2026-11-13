@@ -54,6 +54,8 @@ impl Minecraft {
             ("versions", Err(e)) => self.msg = e,
             ("create", Ok(m)) => { self.step = Step::Done; self.msg = m; self.addr = super::network::local_ip(); }
             ("create", Err(e)) => { self.step = Step::Options; self.msg = e; }
+            ("accept", Ok(m)) => { self.eula = true; self.msg = m; }
+            ("accept", Err(e)) => self.msg = e,
             _ => {}
         }
     }
@@ -124,7 +126,14 @@ impl Application for Minecraft {
                 }
             },
             Step::Working => {}
-            Step::Done => if k.code == code::ENTER || k.code == code::ESC { self.step = Step::Type; self.msg.clear(); },
+            Step::Done => {
+                if k.code == code::ENTER || k.code == code::ESC { self.step = Step::Type; self.msg.clear(); }
+                else if !self.eula && k.ch().map(|c| c.to_ascii_lowercase()) == Some('e') {
+                    // the person at the keyboard asks for the EULA to be accepted for this server
+                    self.job.start(env, &self.be, "accept", vec!["mc-accept".into(), self.name.clone()]);
+                    self.msg = "Accepting the EULA and starting the server...".into();
+                }
+            }
         }
         Out::None
     }
@@ -175,6 +184,10 @@ impl Application for Minecraft {
                 let line = match &self.addr { Some(ip) => format!("Players on your network connect to:  {ip}:25565"), None => "Players connect to this computer's address, port 25565.".to_string() };
                 for l in super::wrap_text(&line, a.w) { if y < foot.saturating_sub(1) { p.clip(a.x, y, a.w, &l, t.accent, t.panel); y += 1; } }
                 y += 1;
+                if !self.eula {
+                    for l in super::wrap_text("The server will not start yet: the Minecraft EULA has not been accepted. Read it at https://aka.ms/MinecraftEULA, then press E to accept it and start the server.", a.w) { if y < foot.saturating_sub(1) { p.clip(a.x, y, a.w, &l, t.accent, t.panel); y += 1; } }
+                    y += 1;
+                }
                 for l in super::wrap_text("To play from outside your home you must also forward port 25565 on your router. The server starts at every boot and restarts if it crashes.", a.w) { if y < foot.saturating_sub(1) { p.clip(a.x, y, a.w, &l, t.dim, t.panel); y += 1; } }
             }
             Step::Options | Step::Working => {
@@ -186,7 +199,7 @@ impl Application for Minecraft {
                 if self.step == Step::Options && !self.eula { p.paragraph(a.x, a.y + 12, a.w, "Without the tick the server is installed but will not start.", t.dim, t.panel); }
             }
         }
-        let hint = match self.step { Step::Type => "Up/Down Choose   Enter Next", Step::Versions => "Up/Down Choose   Enter Next   Esc Back", Step::Ram => "Left/Right or 2 4 8   Enter Next   Esc Back", Step::Options => "Tab Next box   Space Tick   Enter Install   Esc Back", Step::Working => "Please wait...", Step::Done => "Enter Back to the start" };
+        let hint = match self.step { Step::Type => "Up/Down Choose   Enter Next", Step::Versions => "Up/Down Choose   Enter Next   Esc Back", Step::Ram => "Left/Right or 2 4 8   Enter Next   Esc Back", Step::Options => "Tab Next box   Space Tick   Enter Install   Esc Back", Step::Working => "Please wait...", Step::Done => if self.eula { "Enter Back to the start" } else { "E Accept the EULA and start   Enter Back to the start" } };
         p.clip(a.x, foot, a.w, hint, t.dim, t.panel);
         if self.step != Step::Done && !self.msg.is_empty() { super::draw_note(p, a.x, foot.saturating_sub(1), a.w, &self.msg, t.accent, t.panel, 3); }
     }
@@ -210,7 +223,7 @@ mod tests {
         let c2 = calls.clone();
         let be: Backend = Arc::new(move |r: &[String]| {
             c2.lock().unwrap().push(r.join(" "));
-            match r[0].as_str() { "mc-versions" => Ok("latest 1.21.5\nrelease 1.21.5\nrelease 1.21.4\nrelease 1.8.9\n".into()), "mc-create" if r[2] == "1.8.9" => Err("Installing Java failed".into()), "mc-create" => Ok("Minecraft installed and starting".into()), _ => Ok(String::new()) }
+            match r[0].as_str() { "mc-accept" => Ok("The EULA is accepted and the server is starting.".into()), "mc-versions" => Ok("latest 1.21.5\nrelease 1.21.5\nrelease 1.21.4\nrelease 1.8.9\n".into()), "mc-create" if r[2] == "1.8.9" => Err("Installing Java failed".into()), "mc-create" => Ok("Minecraft installed and starting".into()), _ => Ok(String::new()) }
         });
         (Minecraft::new(be, mem_kb), calls)
     }
@@ -278,6 +291,18 @@ mod tests {
         for _ in 0..12 { key(&mut m, "backspace"); }
         text(&mut m, "old"); key(&mut m, "enter"); key(&mut m, "enter"); key(&mut m, "enter");
         assert!(m.state().contains("step=options") && m.msg.contains("Java failed"), "{}", m.msg);
+    }
+
+    #[test]
+    fn a_server_installed_without_the_tick_can_be_accepted_from_the_done_screen() {
+        let (mut m, calls) = app(16_000_000); settle(&mut m);
+        for _ in 0..6 { key(&mut m, "enter"); }                         // everything on the defaults, EULA box untouched
+        assert!(m.state().contains("step=done") && m.state().contains("eula=false") || m.state().contains("step=done"), "{}", m.state());
+        key(&mut m, "e");
+        assert!(calls.lock().unwrap().contains(&"mc-accept minecraft".to_string()), "{:?}", calls.lock().unwrap());
+        assert!(m.eula && m.msg.contains("accepted"), "{}", m.msg);
+        let before = calls.lock().unwrap().len();
+        key(&mut m, "e"); assert_eq!(calls.lock().unwrap().len(), before, "once accepted the key does nothing");
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub mod monitor;
 pub mod network;
 pub mod notepad;
 pub mod paint;
+pub mod remote;
 pub mod reversi;
 pub mod services;
 pub mod software;
@@ -26,14 +27,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft, DiscordBot }
+pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft, DiscordBot, Remote }
 
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Kind::Notepad => "notepad", Kind::Terminal => "terminal", Kind::Paint => "paint", Kind::Monitor => "monitor",
             Kind::DiskUsage => "diskusage", Kind::Network => "network", Kind::Clock => "clock",
-            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft", Kind::DiscordBot => "discordbot",
+            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft", Kind::DiscordBot => "discordbot", Kind::Remote => "remote",
         }
     }
 }
@@ -92,6 +93,7 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Notepad => Box::new(notepad::Notepad::new(env)),
         Kind::Paint => Box::new(paint::Paint::new(env)),
         Kind::Monitor => Box::new(monitor::Monitor::new()),
+        Kind::Remote => Box::new(remote::Remote::new(helper_backend())),
         Kind::DiscordBot => Box::new(discordbot::DiscordBot::new(helper_backend())),
         Kind::Minecraft => Box::new(minecraft::Minecraft::new(helper_backend(), minecraft::Minecraft::system_memory_kb())),
         Kind::Services => Box::new(services::Services::new(helper_backend())),

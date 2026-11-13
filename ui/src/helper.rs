@@ -224,6 +224,14 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         }
         "fw-remove" => { let mut c = fw_config(ctx.root); let before = c.rules.len(); c.rules.retain(|r| r.name != arg(1).unwrap_or("")); if c.rules.len() == before { return Err("There is no such rule.".into()); } fw_save(ctx, &c) }
         "fw-apply" => fw_apply(ctx),
+        "ssh-status" => Ok(crate::ssh::status(ctx)),
+        "ssh-enable" => {
+            let port: u16 = arg(1)?.parse().map_err(|_| "The port must be a number.".to_string())?;
+            crate::ssh::enable(ctx, port, arg(2)? == "1", arg(3)?)
+        }
+        "ssh-disable" => crate::ssh::disable(ctx),
+        "ssh-addkey" => crate::ssh::add_key(ctx, arg(1)?, arg(2)?),
+        "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
         "bot-create" => {
             let (name, lang, kind, srcarg, token, user) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?, arg(6)?);
             let lang = crate::bot::Lang::parse(lang).ok_or("The language must be python or node.")?;
@@ -458,6 +466,18 @@ pub fn cli(args: &[String]) -> i32 {
             let (kind, arg) = match (opt("--folder"), opt("--git")) { (Some(f), _) => ("folder", f), (None, Some(g)) => ("git", g), _ => ("starter", "-".to_string()) };
             show(call(&["bot-create", name, lang, kind, &arg, &token, &user]))
         }
+        ["--ssh", "status"] => show(call(&["ssh-status"])),
+        ["--ssh", "disable"] => show(call(&["ssh-disable"])),
+        ["--ssh", "enable", rest @ ..] => {
+            let opt = |flag: &str| rest.iter().position(|a| *a == flag).and_then(|i| rest.get(i + 1).copied()).map(String::from);
+            let user = opt("--user").unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+            show(call(&["ssh-enable", &opt("--port").unwrap_or_else(|| "22".into()), if rest.contains(&"--password-login") { "1" } else { "0" }, &user]))
+        }
+        ["--ssh", "addkey", key, rest @ ..] => {
+            let user = rest.iter().position(|a| *a == "--user").and_then(|i| rest.get(i + 1).copied()).map(String::from).unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+            show(call(&["ssh-addkey", &user, key]))
+        }
+        ["--mc", "accept", name] => show(call(&["mc-accept", name])),
         ["--fw", "status"] => show(call(&["fw-status"])),
         ["--fw", on_off @ ("on" | "off")] => show(call(&["fw-enable", on_off])),
         ["--fw", "allow", name, port, rest @ ..] => { let scope = rest.first().copied().unwrap_or("local"); show(call(&["fw-allow", name, port, scope])) }
@@ -467,7 +487,7 @@ pub fn cli(args: &[String]) -> i32 {
         ["--pkg", "search", q] => show(call(&["apk-search", q])),
         ["--pkg", "update"] => show(call(&["apk-update"])),
         ["--pkg", "list"] => show(call(&["apk-installed"])),
-        _ => { let _ = writeln!(std::io::stderr(), "usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --bot create NAME python|node [--folder PATH | --git URL] [--user U]   (token: set DISCORD_TOKEN first, or type it as the first line)\n       exec85 --fw status | on | off | allow NAME PORT[/tcp|udp] [local|anywhere] | remove NAME\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions [vanilla|paper|fabric] | create NAME VERSION 2|4|8 [--eula] [--type vanilla|paper|fabric] [--user U]"); 2 }
+        _ => { let _ = writeln!(std::io::stderr(), "usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --bot create NAME python|node [--folder PATH | --git URL] [--user U]   (token: set DISCORD_TOKEN first, or type it as the first line)\n       exec85 --ssh status | enable [--port N] [--password-login] [--user U] | disable | addkey \"PUBLIC KEY\" [--user U]\n       exec85 --fw status | on | off | allow NAME PORT[/tcp|udp] [local|anywhere] | remove NAME\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions [vanilla|paper|fabric] | create NAME VERSION 2|4|8 [--eula] [--type vanilla|paper|fabric] [--user U]"); 2 }
     }
 }
 

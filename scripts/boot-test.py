@@ -374,13 +374,30 @@ def scenario_install():
         vm.stop()
 
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software"]
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote"]
 
-SHIFTED = {"_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
+SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}
 
 KEYBOARD = {"layout": "us"}   # the layout the system under test is using
 UK_SHIFTED = {"|": "shift-less", '"': "shift-2"}   # the UK keyboard puts these elsewhere than the US one
+
+def http_probe(port, timeout=5):
+    """From outside the VM: does an HTTP server answer on this forwarded port?"""
+    try:
+        c = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        c.sendall(b"GET / HTTP/1.0\r\n\r\n"); c.settimeout(timeout)
+        data = c.recv(100); c.close()
+        return data.startswith(b"HTTP/")
+    except Exception:
+        return False
+
+def wait_probe(port, want, seconds=20):
+    end = time.time() + seconds
+    while time.time() < end:
+        if http_probe(port, 3) == want: return True
+        time.sleep(1)
+    return False
 
 def type_text(vm, text):
     """Type text into the focused window with real key presses."""
@@ -468,7 +485,8 @@ def scenario_testing():
     subprocess.run(["mkfs.vfat", "-F", "32", "-n", "TESTUSB", usb], check=True, stdout=subprocess.DEVNULL)
     subprocess.run(["mcopy", "-i", usb, os.path.join(outdir, "hello.txt"), "::HELLO.TXT"], check=True)
     # the USB controller and the stick's disk exist from the start; the stick itself is plugged in later with device_add
-    vm = VM("testing", cdrom=iso, mem=3072, extra=["-device", "qemu-xhci,id=xhci", "-drive", f"if=none,id=usbd,file={usb},format=raw"])   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
+    vm = VM("testing", cdrom=iso, mem=3072, extra=["-device", "qemu-xhci,id=xhci", "-drive", f"if=none,id=usbd,file={usb},format=raw",
+                                                      "-netdev", "user,id=n0,hostfwd=tcp::2222-:22,hostfwd=tcp::8081-:8080", "-device", "e1000e,netdev=n0"])   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
     try:
         step("testing: installer is up", vm.wait_for(r"EXEC85_SCREEN installer", 600 if SLOW else 120) is not None)
         press(vm, "ret", I, step="theme")
@@ -584,6 +602,31 @@ def scenario_testing():
         d = svc_line(vm, "web", lambda d: d["status"] == "running" and d["pid"] not in ("-", pid1), 60, after=n)
         step("services: it comes back by itself with a new process", d is not None, f"old pid {pid1}")
         terminal_run(vm, "wget -q -O /dev/null http://127.0.0.1:8080/; echo HTTP2=$?", "HTTP2=0", 60, "services: the website answers again")
+
+        # ---- firewall: a closed port is not reachable from outside, an opened one is ----
+        step("firewall: a port nobody opened is not reachable from outside", not http_probe(8081), "the website on 8080 answered from outside although no rule opens it")
+        terminal_run(vm, "fw allow web 8080/tcp; echo FW$((5-3))", "FW2", 60, "firewall: a port is opened with fw allow")
+        step("firewall: the opened port is reachable from the home network", wait_probe(8081, True))
+        terminal_run(vm, "fw remove web; echo FR$((5-3))", "FR2", 60, "firewall: a port is closed with fw remove")
+        step("firewall: and it is closed again", wait_probe(8081, False))
+
+        # ---- SSH: key-only by default, reachable from the home network ----
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "citest", "-f", os.path.join(outdir, "id_test")], check=True)
+        pub = open(os.path.join(outdir, "id_test.pub")).read().strip()
+        terminal_run(vm, "exec85 --ssh enable > /tmp/ssh.txt 2>&1; echo SE$((5-3))", "SE2", 600, "ssh: the server is installed and switched on")
+        try: terminal_run(vm, f"exec85 --ssh addkey \"{pub}\" > /tmp/key.txt 2>&1; cat /tmp/key.txt | cut -c1-40", "Key_added", 60, "ssh: a public key is added")
+        except AssertionError:
+            dump_file(vm, "/tmp/ssh.txt", 4); dump_file(vm, "/tmp/key.txt", 3)
+            raise
+        ssh = ["ssh", "-p", "2222", "-i", os.path.join(outdir, "id_test"), "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "tester@127.0.0.1"]
+        ok = False; out = ""
+        for _ in range(8):
+            r = subprocess.run(ssh + ["echo", "SSH_OK_$((1+1))"], capture_output=True, text=True); out = r.stdout + r.stderr
+            if "SSH_OK_" in r.stdout: ok = True; break
+            time.sleep(4)
+        step("ssh: logging in with the key works from outside", ok, out[-300:])
+        r = subprocess.run(["ssh", "-p", "2222", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "BatchMode=yes", "-o", "PreferredAuthentications=password", "-o", "PubkeyAuthentication=no", "-o", "ConnectTimeout=8", "tester@127.0.0.1", "echo", "BAD"], capture_output=True, text=True)
+        step("ssh: a password login is refused", "BAD" not in r.stdout and "Permission denied" in r.stderr, (r.stdout + r.stderr)[-300:])
 
         # ---- sleep mode: the screen goes black, the service keeps running, a key wakes it without being used ----
         n = svc_count(vm, "web")
