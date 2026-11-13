@@ -386,6 +386,28 @@ Syncthing, Forgejo, ad blocker, media server.
    over **HTTPS with a certificate they trust**, so this depends on the website/reverse-proxy and DuckDNS items (or
    on reaching it through the VPN); the screen explains which option you chose and what is missing.
 
+### Release plan after v0.7.0 (decided; order inside a release can change)
+**v0.8.0 - "everyday server"**
+- Minecraft: an "Accept the EULA and start" button on the done screen, clearer messages for too little memory or a failed download.
+- The quick installers become *recipes* (see M6.5), plus an **App catalog** screen: one place that lists every installer, what it needs (memory, disk, network), and whether it is installed.
+- Remote access, first part: **SSH server** (key-only by default) and the **firewall** (default: refuse incoming; each installer opens only its own port).
+- Network: **settings and Wi-Fi** in the Network app (automatic or fixed address, turn an interface on/off, join a Wi-Fi network).
+- New installers: **website** (nginx), **file sharing** (Samba), **Syncthing**, **PostgreSQL / MariaDB** (one click, a database and a user for your own projects), **Transmission** (torrents, with a web page), **print server** (CUPS).
+- More **game servers** in the same style as Minecraft (version, memory, ports, restart on crash): **Terraria**, **Factorio**, **Valheim**, **Minecraft Bedrock** (the phone/console edition). Each is only released once its real download works in CI.
+- **Local name**: `exec85.local` (or your device name) works on the home network without knowing the IP address.
+- **Disk health and temperature**: a screen with each disk's health (SMART), its temperature and the CPU temperature, with a warning colour; the laptop will need it.
+- **Scheduled backups**: choose folders and a destination (a pendrive or another disk), pick a time, and restore from a list of past backups.
+- **Users**: add or remove users and change passwords from a screen (with the wheel/administrator choice made explicit).
+- **Scheduled tasks**: a simple screen for "run this command every night / every hour".
+- **Log viewer**: read the system's and any service's log in one place, with search.
+Honest note: this is a lot. If it grows too big, the last items move to a v0.8.5 release rather than being rushed.
+
+**v0.9.0 - "reach it from anywhere"**: Git server (Forgejo), **WireGuard** VPN, **Wake-on-LAN**, **dynamic DNS** (DuckDNS), **reverse proxy with HTTPS** (Caddy), the ad blocker (DNS blocker), the media server (Navidrome + MiniDLNA), Home Assistant (with a clear memory warning).
+
+**v0.10.0 - "look after itself"**: **web dashboard**, **automatic updates** (software and Exec85 itself, with a fallback boot entry), the **uptime monitor with alerts** (Discord webhook / ntfy), **Vaultwarden**.
+
+**Whenever the laptop arrives**: real-hardware testing (drivers, Wi-Fi, 4 TB GPT disk, lid-close, real numbers), the Debian comparison, and replacing the placeholder installer music.
+
 ### M7. Public release
 **Before going public:** replace the installer music (`image/assets/audio/installer.mp3` is third-party and not licensed for
 redistribution) and remove it from the git history; see `image/assets/audio/README.md`.
