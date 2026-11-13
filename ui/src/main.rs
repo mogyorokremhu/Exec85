@@ -24,6 +24,8 @@ mod installer;
 mod keys;
 mod layout;
 mod login;
+mod netapply;
+mod netconf;
 mod mc;
 mod paint;
 mod shell;
@@ -384,7 +386,8 @@ fn main() {
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
         Some("--helperd") => helper::serve(),
-        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") | Some("--bot") | Some("--fw") | Some("--ssh") => std::process::exit(helper::cli(&args[1..])),
+        Some("--net-apply") => { let ctx = helper::Ctx { root: Path::new("/"), runner: &helper::SysRunner }; for n in netapply::apply_all(&ctx) { eprintln!("{n}"); } }
+        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") | Some("--bot") | Some("--fw") | Some("--ssh") | Some("--net") => std::process::exit(helper::cli(&args[1..])),
         None => supervisor::run(),
         Some(other) => { eprintln!("unknown option {other}; try --version"); std::process::exit(2); }
     }

@@ -98,7 +98,7 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Minecraft => Box::new(minecraft::Minecraft::new(helper_backend(), minecraft::Minecraft::system_memory_kb())),
         Kind::Services => Box::new(services::Services::new(helper_backend())),
         Kind::Software => Box::new(software::Software::new(helper_backend())),
-        Kind::Network => Box::new(network::Network::new()),
+        Kind::Network => Box::new(network::Network::new(helper_backend())),
         Kind::Terminal => Box::new(terminal::Terminal::open(env)),
         Kind::DiskUsage => Box::new(diskusage::DiskUsage::new(env)),
         Kind::Reversi => Box::new(reversi::Reversi::new()),

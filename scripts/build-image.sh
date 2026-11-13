@@ -31,7 +31,7 @@ apk add --root "$R" --initdb --no-cache --keys-dir /etc/apk/keys \
     alpine-baselayout alpine-release busybox busybox-openrc openrc mdev-conf kmod \
     sfdisk e2fsprogs dosfstools tzdata doas mkinitfs ssl_client ca-certificates-bundle nftables >/dev/null
 # Sound: a looping player for the installer's music, and the mixer tool. Optional: a missing package only means no music.
-for pkg in mpg123 mpg123-alsa alsa-utils; do
+for pkg in mpg123 mpg123-alsa alsa-utils wpa_supplicant iw; do
     apk add --root "$R" --no-cache --keys-dir /etc/apk/keys "$pkg" >/dev/null 2>&1 || echo "WARNING: package $pkg is not available; the installer will have no music"
 done
 # Make sure the groups the installer puts the first user into exist (with a free group id).

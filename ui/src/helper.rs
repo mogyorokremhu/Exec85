@@ -232,6 +232,20 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "ssh-disable" => crate::ssh::disable(ctx),
         "ssh-addkey" => crate::ssh::add_key(ctx, arg(1)?, arg(2)?),
         "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
+        "net-set" => {
+            let name = arg(1)?;
+            let mode = match arg(2)? {
+                "dhcp" => crate::netconf::Mode::Dhcp,
+                "off" => crate::netconf::Mode::Off,
+                "static" => crate::netconf::static_mode(arg(3)?, arg(4)?, w.get(5).map_or("", String::as_str))?,
+                _ => return Err("The mode must be dhcp, static or off.".into()),
+            };
+            crate::netapply::set(ctx, name, mode)
+        }
+        "net-apply" => Ok(crate::netapply::apply_all(ctx).join("\n")),
+        "wifi-scan" => crate::netapply::wifi_scan(ctx, arg(1)?),
+        "wifi-connect" => crate::netapply::wifi_connect(ctx, arg(1)?, arg(2)?, w.get(3).map_or("", String::as_str)),
+        "wifi-forget" => crate::netapply::wifi_forget(ctx, arg(1)?),
         "bot-create" => {
             let (name, lang, kind, srcarg, token, user) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?, arg(6)?);
             let lang = crate::bot::Lang::parse(lang).ok_or("The language must be python or node.")?;
@@ -478,6 +492,10 @@ pub fn cli(args: &[String]) -> i32 {
             show(call(&["ssh-addkey", &user, key]))
         }
         ["--mc", "accept", name] => show(call(&["mc-accept", name])),
+        ["--net", "set", name, mode, rest @ ..] => { let mut v = vec!["net-set", name, mode]; v.extend(rest.iter().copied()); show(call(&v)) }
+        ["--net", "wifi", "scan", iface] => show(call(&["wifi-scan", iface])),
+        ["--net", "wifi", "connect", iface, ssid] => { let pw = std::env::var("WIFI_PASSWORD").unwrap_or_default(); show(call(&["wifi-connect", iface, ssid, &pw])) }
+        ["--net", "wifi", "forget", ssid] => show(call(&["wifi-forget", ssid])),
         ["--fw", "status"] => show(call(&["fw-status"])),
         ["--fw", on_off @ ("on" | "off")] => show(call(&["fw-enable", on_off])),
         ["--fw", "allow", name, port, rest @ ..] => { let scope = rest.first().copied().unwrap_or("local"); show(call(&["fw-allow", name, port, scope])) }
@@ -487,7 +505,7 @@ pub fn cli(args: &[String]) -> i32 {
         ["--pkg", "search", q] => show(call(&["apk-search", q])),
         ["--pkg", "update"] => show(call(&["apk-update"])),
         ["--pkg", "list"] => show(call(&["apk-installed"])),
-        _ => { let _ = writeln!(std::io::stderr(), "usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --bot create NAME python|node [--folder PATH | --git URL] [--user U]   (token: set DISCORD_TOKEN first, or type it as the first line)\n       exec85 --ssh status | enable [--port N] [--password-login] [--user U] | disable | addkey \"PUBLIC KEY\" [--user U]\n       exec85 --fw status | on | off | allow NAME PORT[/tcp|udp] [local|anywhere] | remove NAME\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions [vanilla|paper|fabric] | create NAME VERSION 2|4|8 [--eula] [--type vanilla|paper|fabric] [--user U]"); 2 }
+        _ => { let _ = writeln!(std::io::stderr(), "usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --bot create NAME python|node [--folder PATH | --git URL] [--user U]   (token: set DISCORD_TOKEN first, or type it as the first line)\n       exec85 --ssh status | enable [--port N] [--password-login] [--user U] | disable | addkey \"PUBLIC KEY\" [--user U]\n       exec85 --net set IFACE dhcp|off|static CIDR GATEWAY [DNS] | wifi scan IFACE | wifi connect IFACE SSID (password in WIFI_PASSWORD) | wifi forget SSID\n       exec85 --fw status | on | off | allow NAME PORT[/tcp|udp] [local|anywhere] | remove NAME\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions [vanilla|paper|fabric] | create NAME VERSION 2|4|8 [--eula] [--type vanilla|paper|fabric] [--user U]"); 2 }
     }
 }
 
