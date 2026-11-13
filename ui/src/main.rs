@@ -6,6 +6,7 @@
 //!   --ppm FILE   draw the shell into an image file (testing)
 mod account;
 mod audio;
+mod bot;
 mod app;
 mod apps;
 mod cmds;
@@ -105,19 +106,22 @@ fn save_sleep(minutes: u32) {
 struct Screen { display: display::Display, m: Metrics, canvas: Canvas }
 
 impl Screen {
-    fn open() -> Screen {
+    /// Try to take the display; the error says why not.
+    fn try_open() -> Result<Screen, String> {
         // Stop the text console from drawing over us (needs permission; fine if it is refused).
         if let Ok(tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty0") {
             use std::os::fd::AsRawFd;
             // KDSETMODE = 0x4B3A, KD_GRAPHICS = 1
             unsafe { sys::ioctl(tty.as_raw_fd(), 0x4B3A, 1 as std::os::raw::c_ulong) };
         }
-        match display::Display::open() {
-            Ok(display) => {
-                let m = Metrics::for_height(display.height);
-                let canvas = Canvas::new(display.width, display.height);
-                Screen { display, m, canvas }
-            }
+        let display = display::Display::open().map_err(|e| e.to_string())?;
+        let m = Metrics::for_height(display.height);
+        let canvas = Canvas::new(display.width, display.height);
+        Ok(Screen { display, m, canvas })
+    }
+    fn open() -> Screen {
+        match Screen::try_open() {
+            Ok(s) => s,
             Err(e) => { log(&format!("EXEC85_ERROR no display: {e}")); thread::sleep(Duration::from_secs(3)); std::process::exit(1); }
         }
     }
@@ -186,7 +190,10 @@ enum Event { Key(Key), Wake }
 /// The boot screen, shown from early in the boot until the first real screen takes over (the supervisor stops it).
 fn stage_splash() -> ! {
     let _ = stdfs::write("/run/exec85-splash.pid", std::process::id().to_string());
-    let mut s = Screen::open();
+    // This starts right after the drivers were loaded, so the display may take a moment to appear: keep trying for 20 seconds.
+    let mut s = None;
+    for _ in 0..200 { match Screen::try_open() { Ok(x) => { s = Some(x); break; } Err(_) => thread::sleep(Duration::from_millis(100)) } }
+    let Some(mut s) = s else { std::process::exit(0) };
     log("EXEC85_SPLASH shown");
     let (start, mode) = (std::time::Instant::now(), read_mode());
     loop {
@@ -356,7 +363,7 @@ fn main() {
     if let Some(name) = args.first().and_then(|a| Path::new(a).file_name()).map(|n| n.to_string_lossy().into_owned()) {
         if let Some(code) = cmds::run(&name, &args[1..]) { std::process::exit(code); }
         // `svc` and `pkg` are short forms of `exec85 --svc` and `exec85 --pkg`.
-        if name == "svc" || name == "pkg" || name == "mc" {
+        if name == "svc" || name == "pkg" || name == "mc" || name == "bot" {
             let mut a = vec![format!("--{name}")];
             a.extend(args[1..].iter().cloned());
             std::process::exit(helper::cli(&a));
@@ -374,7 +381,7 @@ fn main() {
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
         Some("--helperd") => helper::serve(),
-        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") => std::process::exit(helper::cli(&args[1..])),
+        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") | Some("--bot") => std::process::exit(helper::cli(&args[1..])),
         None => supervisor::run(),
         Some(other) => { eprintln!("unknown option {other}; try --version"); std::process::exit(2); }
     }

@@ -169,6 +169,12 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
             let kind = match w.get(6) { Some(t) => crate::mc::ServerType::parse(t).ok_or("Server type must be vanilla, paper or fabric.")?, None => crate::mc::ServerType::Vanilla };
             crate::mc::create(ctx, &crate::mc::Create { kind, name, version, ram_gb, eula: eula == "1", user })
         }
+        "bot-create" => {
+            let (name, lang, kind, srcarg, token, user) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?, arg(6)?);
+            let lang = crate::bot::Lang::parse(lang).ok_or("The language must be python or node.")?;
+            let source = match kind { "starter" => crate::bot::Source::Starter, "folder" => crate::bot::Source::Folder(srcarg.to_string()), "git" => crate::bot::Source::Git(srcarg.to_string()), _ => return Err("The code must come from the starter, a folder or Git.".into()) };
+            crate::bot::create(ctx, &crate::bot::Create { name, lang, source, token, user })
+        }
         "apk-installed" => { let (_c, out) = ctx.runner.run("apk", &["info", "-v"]); Ok(cap(out)) }
         "apk-update" => { let (c, out) = ctx.runner.run("apk", &["update"]); if c == 0 { Ok(cap(out)) } else { Err(cap(out)) } }
         "apk-upgrade" => { let (c, out) = ctx.runner.run("apk", &["upgrade", "--no-progress"]); if c == 0 { Ok(cap(out)) } else { Err(cap(out)) } }
@@ -388,12 +394,20 @@ pub fn cli(args: &[String]) -> i32 {
             let kind = opt("--type").unwrap_or_else(|| "vanilla".into());
             show(call(&["mc-create", name, version, ram, if eula { "1" } else { "0" }, &user, &kind]))
         }
+        ["--bot", "create", name, lang, rest @ ..] => {
+            // The token is never given on the command line (others could see it): it comes from $DISCORD_TOKEN or the first line typed in.
+            let token = std::env::var("DISCORD_TOKEN").ok().filter(|t| !t.is_empty()).or_else(|| { let mut l = String::new(); std::io::stdin().read_line(&mut l).ok().map(|_| l.trim().to_string()) }).unwrap_or_default();
+            let opt = |flag: &str| rest.iter().position(|a| *a == flag).and_then(|i| rest.get(i + 1).copied()).map(String::from);
+            let user = opt("--user").unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+            let (kind, arg) = match (opt("--folder"), opt("--git")) { (Some(f), _) => ("folder", f), (None, Some(g)) => ("git", g), _ => ("starter", "-".to_string()) };
+            show(call(&["bot-create", name, lang, kind, &arg, &token, &user]))
+        }
         ["--usb", "eject", mount] => show(call(&["usb-eject", mount])),
         ["--pkg", a @ ("add" | "del"), pkgs @ ..] if !pkgs.is_empty() => { let mut v = vec![format!("apk-{a}")]; v.extend(pkgs.iter().map(|p| p.to_string())); let r: Vec<&str> = v.iter().map(String::as_str).collect(); show(call(&r)) }
         ["--pkg", "search", q] => show(call(&["apk-search", q])),
         ["--pkg", "update"] => show(call(&["apk-update"])),
         ["--pkg", "list"] => show(call(&["apk-installed"])),
-        _ => { let _ = writeln!(std::io::stderr(), "usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions [vanilla|paper|fabric] | create NAME VERSION 2|4|8 [--eula] [--type vanilla|paper|fabric] [--user U]"); 2 }
+        _ => { let _ = writeln!(std::io::stderr(), "usage: exec85 --svc add NAME [--dir D] [--user U] [--env K=V] [--no-autostart] -- COMMAND...\n       exec85 --svc list|start|stop|restart|status|remove|log NAME\n       exec85 --pkg add|del PACKAGE... | search WORD | update | list\n       exec85 --bot create NAME python|node [--folder PATH | --git URL] [--user U]   (token: set DISCORD_TOKEN first, or type it as the first line)\n       exec85 --usb eject MOUNTPOINT\n       exec85 --mc versions [vanilla|paper|fabric] | create NAME VERSION 2|4|8 [--eula] [--type vanilla|paper|fabric] [--user U]"); 2 }
     }
 }
 
