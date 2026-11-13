@@ -190,10 +190,11 @@ enum Event { Key(Key), Wake }
 /// The boot screen, shown from early in the boot until the first real screen takes over (the supervisor stops it).
 fn stage_splash() -> ! {
     let _ = stdfs::write("/run/exec85-splash.pid", std::process::id().to_string());
+    log("EXEC85_SPLASH starting");
     // This starts right after the drivers were loaded, so the display may take a moment to appear: keep trying for 20 seconds.
     let mut s = None;
     for _ in 0..200 { match Screen::try_open() { Ok(x) => { s = Some(x); break; } Err(_) => thread::sleep(Duration::from_millis(100)) } }
-    let Some(mut s) = s else { std::process::exit(0) };
+    let Some(mut s) = s else { log("EXEC85_SPLASH no display"); std::process::exit(0) };
     log("EXEC85_SPLASH shown");
     let (start, mode) = (std::time::Instant::now(), read_mode());
     loop {
