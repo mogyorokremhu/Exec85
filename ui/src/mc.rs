@@ -105,7 +105,8 @@ impl P<'_> {
 // ---- Mojang's lists --------------------------------------------------------------------------------------------------
 
 pub const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
-const ALLOWED_HOSTS: [&str; 3] = ["https://piston-meta.mojang.com/", "https://piston-data.mojang.com/", "https://launchermeta.mojang.com/"];
+const ALLOWED_HOSTS: [&str; 7] = ["https://piston-meta.mojang.com/", "https://piston-data.mojang.com/", "https://launchermeta.mojang.com/",
+    "https://fill.papermc.io/", "https://fill-data.papermc.io/", "https://api.papermc.io/", "https://meta.fabricmc.net/"];
 
 /// Only Mojang's own download hosts are used, whatever a downloaded list says.
 pub fn allowed_url(u: &str) -> bool { ALLOWED_HOSTS.iter().any(|h| u.starts_with(h)) && !u.contains(char::is_whitespace) && !u.contains("..") }
@@ -170,22 +171,137 @@ fn tmp_file(ctx: &Ctx, name: &str) -> std::path::PathBuf { ctx.root.join("run/ex
 fn fetch(ctx: &Ctx, url: &str, to: &Path) -> Result<(), String> {
     if !allowed_url(url) { return Err("That address is not on Mojang's download servers.".into()); }
     if let Some(p) = to.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
-    let (code, out) = ctx.runner.run("wget", &["-q", "-T", "60", "-O", &to.to_string_lossy(), "--", url]);
+    let (code, out) = ctx.runner.run("wget", &["-q", "-T", "60", "-U", "Exec85", "-O", &to.to_string_lossy(), "--", url]);
     if code != 0 { let _ = std::fs::remove_file(to); return Err(format!("The download failed. Is the network working? {}", out.trim())); }
     Ok(())
 }
 
-/// `mc-versions`: "latest <id>" then one "release <id>" line per release (newest first, at most 80).
-pub fn versions(ctx: &Ctx) -> Result<String, String> {
-    let f = tmp_file(ctx, "mc-manifest.json");
-    fetch(ctx, MANIFEST_URL, &f)?;
-    let text = std::fs::read_to_string(&f).map_err(|e| e.to_string())?;
+// ---- server types: Vanilla (Mojang), Paper and Fabric ------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerType { Vanilla, Paper, Fabric }
+
+impl ServerType {
+    pub const ALL: [ServerType; 3] = [ServerType::Vanilla, ServerType::Paper, ServerType::Fabric];
+    pub fn parse(s: &str) -> Option<ServerType> { match s.to_lowercase().as_str() { "vanilla" => Some(ServerType::Vanilla), "paper" => Some(ServerType::Paper), "fabric" => Some(ServerType::Fabric), _ => None } }
+    pub fn id(self) -> &'static str { match self { ServerType::Vanilla => "vanilla", ServerType::Paper => "paper", ServerType::Fabric => "fabric" } }
+    pub fn label(self) -> &'static str { match self { ServerType::Vanilla => "Vanilla", ServerType::Paper => "Paper", ServerType::Fabric => "Fabric" } }
+    pub fn blurb(self) -> &'static str { match self { ServerType::Vanilla => "the original server from Mojang", ServerType::Paper => "faster, and supports plugins", ServerType::Fabric => "lightweight, and supports mods" } }
+}
+
+/// Compare version numbers like 1.21.10 and 1.21.9 by their number parts.
+pub fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let n = |s: &str| s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    n(a).cmp(&n(b))
+}
+
+fn is_release_number(v: &str) -> bool { !v.is_empty() && v.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) }
+
+/// Paper's list of game versions, newest first: the new API groups them (`{"versions":{"1.21":["1.21.8",...]}}`), the old one is a plain list.
+pub fn parse_paper_versions(text: &str) -> Result<Vec<String>, String> {
+    let j = parse_json(text)?;
+    let mut v: Vec<String> = match j.get("versions") {
+        Some(Json::Obj(groups)) => groups.iter().flat_map(|(_, a)| a.arr().into_iter().flatten().filter_map(|x| x.str().map(String::from))).collect(),
+        Some(Json::Arr(a)) => a.iter().filter_map(|x| x.str().map(String::from)).collect(),
+        _ => return Err("Paper's version list has an unexpected shape.".into()),
+    };
+    v.retain(|x| is_release_number(x));
+    v.sort_by(|a, b| cmp_versions(b, a));
+    v.dedup();
+    if v.is_empty() { return Err("Paper's version list is empty.".into()); }
+    Ok(v)
+}
+
+fn valid_sha256(s: &str) -> bool { s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()) }
+
+/// (download address, sha256) from the new API's "latest build" answer.
+pub fn parse_paper_build_v3(text: &str) -> Result<(String, String), String> {
+    let j = parse_json(text)?;
+    let d = j.get("downloads").and_then(|d| d.get("server:default")).ok_or("This Paper version has no server download.")?;
+    let url = d.get("url").and_then(Json::str).ok_or("no download address")?.to_string();
+    let sum = d.get("checksums").and_then(|c| c.get("sha256")).and_then(Json::str).ok_or("no checksum")?.to_lowercase();
+    if !valid_sha256(&sum) { return Err("the Paper checksum is not valid".into()); }
+    Ok((url, sum))
+}
+
+/// The same from the old API's list of builds: the newest build on the default channel.
+pub fn parse_paper_builds_v2(text: &str, version: &str) -> Result<(String, String), String> {
+    let j = parse_json(text)?;
+    let b = j.get("builds").and_then(Json::arr).ok_or("no builds")?.iter().rev().find(|b| b.get("channel").and_then(Json::str).map_or(true, |c| c == "default")).ok_or("This Paper version has no stable build yet.")?;
+    let n = b.get("build").and_then(Json::num).ok_or("no build number")? as u64;
+    let app = b.get("downloads").and_then(|d| d.get("application")).ok_or("no download")?;
+    let name = app.get("name").and_then(Json::str).ok_or("no file name")?;
+    let sum = app.get("sha256").and_then(Json::str).ok_or("no checksum")?.to_lowercase();
+    if !valid_sha256(&sum) || name.contains('/') { return Err("the Paper answer is not valid".into()); }
+    Ok((format!("https://api.papermc.io/v2/projects/paper/versions/{version}/builds/{n}/downloads/{name}"), sum))
+}
+
+/// Fabric's stable game versions, newest first.
+pub fn parse_fabric_versions(text: &str) -> Result<Vec<String>, String> {
+    let v: Vec<String> = parse_json(text)?.arr().ok_or("Fabric's version list has an unexpected shape.")?.iter()
+        .filter(|x| x.get("stable") == Some(&Json::Bool(true))).filter_map(|x| x.get("version").and_then(Json::str).map(String::from)).filter(|x| is_release_number(x)).collect();
+    if v.is_empty() { Err("Fabric's version list is empty.".into()) } else { Ok(v) }
+}
+
+/// The newest stable entry of Fabric's loader or installer list.
+pub fn parse_fabric_stable(text: &str) -> Result<String, String> {
+    parse_json(text)?.arr().into_iter().flatten().find(|x| x.get("stable") == Some(&Json::Bool(true))).and_then(|x| x.get("version").and_then(Json::str)).map(String::from).ok_or_else(|| "no stable version found".to_string())
+}
+
+pub fn fabric_server_url(game: &str, loader: &str, installer: &str) -> String { format!("https://meta.fabricmc.net/v2/versions/loader/{game}/{loader}/{installer}/server/jar") }
+
+/// What to check a downloaded server file against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Check { Sha1(String), Sha256(String), None }
+
+pub struct Source { pub url: String, pub check: Check }
+
+fn get_text(ctx: &Ctx, url: &str, tag: &str) -> Result<String, String> {
+    let f = tmp_file(ctx, tag);
+    fetch(ctx, url, &f)?;
+    let t = std::fs::read_to_string(&f).map_err(|e| e.to_string());
     let _ = std::fs::remove_file(&f);
-    let (latest, vs) = parse_manifest(&text)?;
-    let mut out = format!("latest {latest}\n");
-    for v in vs.iter().filter(|v| v.kind == "release").take(80) { out.push_str(&format!("release {}\n", v.id)); }
+    t
+}
+
+/// The versions on offer for a server type, newest first (the first is the latest).
+pub fn version_list(ctx: &Ctx, kind: ServerType) -> Result<Vec<String>, String> {
+    match kind {
+        ServerType::Vanilla => { let (_, vs) = parse_manifest(&get_text(ctx, MANIFEST_URL, "mc-manifest.json")?)?; Ok(vs.into_iter().filter(|v| v.kind == "release").map(|v| v.id).collect()) }
+        ServerType::Paper => {
+            let r = get_text(ctx, "https://fill.papermc.io/v3/projects/paper", "mc-paper.json").and_then(|t| parse_paper_versions(&t));
+            r.or_else(|_| get_text(ctx, "https://api.papermc.io/v2/projects/paper", "mc-paper.json").and_then(|t| parse_paper_versions(&t)))
+        }
+        ServerType::Fabric => parse_fabric_versions(&get_text(ctx, "https://meta.fabricmc.net/v2/versions/game", "mc-fabric.json")?),
+    }
+}
+
+/// Where to download the server of `kind` for game version `version`, and how to check it.
+pub fn resolve(ctx: &Ctx, kind: ServerType, version: &str, vanilla: &ServerInfo) -> Result<Source, String> {
+    match kind {
+        ServerType::Vanilla => Ok(Source { url: vanilla.url.clone(), check: Check::Sha1(vanilla.sha1.clone()) }),
+        ServerType::Paper => {
+            let r = get_text(ctx, &format!("https://fill.papermc.io/v3/projects/paper/versions/{version}/builds/latest"), "mc-paper-build.json").and_then(|t| parse_paper_build_v3(&t));
+            let (url, sum) = r.or_else(|_| get_text(ctx, &format!("https://api.papermc.io/v2/projects/paper/versions/{version}/builds"), "mc-paper-build.json").and_then(|t| parse_paper_builds_v2(&t, version)))
+                .map_err(|e| format!("Paper {version} is not available: {e}"))?;
+            Ok(Source { url, check: Check::Sha256(sum) })
+        }
+        ServerType::Fabric => {
+            let loader = parse_fabric_stable(&get_text(ctx, "https://meta.fabricmc.net/v2/versions/loader", "mc-fabric-loader.json")?)?;
+            let installer = parse_fabric_stable(&get_text(ctx, "https://meta.fabricmc.net/v2/versions/installer", "mc-fabric-installer.json")?)?;
+            Ok(Source { url: fabric_server_url(version, &loader, &installer), check: Check::None })
+        }
+    }
+}
+
+/// `mc-versions`: "latest <id>" then one "release <id>" line per version (newest first, at most 80).
+pub fn versions(ctx: &Ctx, kind: ServerType) -> Result<String, String> {
+    let list = version_list(ctx, kind)?;
+    let mut out = format!("latest {}\n", list[0]);
+    for v in list.iter().take(80) { out.push_str(&format!("release {v}\n")); }
     Ok(out)
 }
+
 
 /// The path as the running system sees it: `p` lies under `root`, and the result always starts with `/` (also when `root` is `/` itself).
 pub fn absolute_in(root: &Path, p: &Path) -> String { format!("/{}", p.strip_prefix(root).unwrap_or(p).to_string_lossy().trim_start_matches('/')) }
@@ -227,7 +343,7 @@ pub fn ensure_java(ctx: &Ctx, major: u32) -> Result<String, String> {
     Ok(rel(&dest.join("bin/java")))
 }
 
-pub struct Create<'a> { pub name: &'a str, pub version: &'a str, pub ram_gb: u32, pub eula: bool, pub user: &'a str }
+pub struct Create<'a> { pub kind: ServerType, pub name: &'a str, pub version: &'a str, pub ram_gb: u32, pub eula: bool, pub user: &'a str }
 
 /// Download the server, install its Java and define (and, with the EULA accepted, start) the service.
 pub fn create(ctx: &Ctx, c: &Create) -> Result<String, String> {
@@ -250,26 +366,30 @@ pub fn create(ctx: &Ctx, c: &Create) -> Result<String, String> {
     let _ = std::fs::remove_file(&vf);
     let java = ensure_java(ctx, info.java)?;
 
+    let src = resolve(ctx, c.kind, c.version, &info)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let jar = dir.join("server.jar");
-    if let Err(e) = fetch(ctx, &info.url, &jar) { let _ = std::fs::remove_dir_all(&dir); return Err(e); }
-    let (code, out) = ctx.runner.run("sha1sum", &[&jar.to_string_lossy()]);
-    if code != 0 || out.split_whitespace().next().map(str::to_lowercase).as_deref() != Some(info.sha1.as_str()) {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err("The downloaded file is damaged (its checksum does not match). Nothing was installed; try again.".into());
-    }
+    if let Err(e) = fetch(ctx, &src.url, &jar) { let _ = std::fs::remove_dir_all(&dir); return Err(e); }
+    let damaged = || "The downloaded file is damaged (its checksum does not match). Nothing was installed; try again.".to_string();
+    let verdict = match &src.check {
+        Check::Sha1(h) => { let (code, out) = ctx.runner.run("sha1sum", &[&jar.to_string_lossy()]); code == 0 && out.split_whitespace().next().map(str::to_lowercase).as_deref() == Some(h.as_str()) }
+        Check::Sha256(h) => { let (code, out) = ctx.runner.run("sha256sum", &[&jar.to_string_lossy()]); code == 0 && out.split_whitespace().next().map(str::to_lowercase).as_deref() == Some(h.as_str()) }
+        Check::None => std::fs::metadata(&jar).map_or(false, |m| m.len() > 0), // Fabric publishes no checksum: it is only known to be non-empty
+    };
+    if !verdict { let _ = std::fs::remove_dir_all(&dir); return Err(damaged()); }
+    match c.kind { ServerType::Fabric => { let _ = std::fs::create_dir_all(dir.join("mods")); } ServerType::Paper => { let _ = std::fs::create_dir_all(dir.join("plugins")); } ServerType::Vanilla => {} }
     std::fs::write(dir.join("eula.txt"), eula_text(c.eula)).map_err(|e| e.to_string())?;
     let (code, out) = ctx.runner.run("chown", &["-R", c.user, &dir.to_string_lossy()]);
     if code != 0 { return Err(format!("Could not give the folder to {}: {}", c.user, out.trim())); }
 
-    let def = ServiceDef { name: c.name.into(), description: format!("Minecraft server {}", c.version), command: server_command(&java, c.ram_gb),
+    let def = ServiceDef { name: c.name.into(), description: format!("{} server {}", c.kind.label(), c.version), command: server_command(&java, c.ram_gb),
         dir: format!("/srv/minecraft/{}", c.name), user: c.user.into(), env: vec![], autostart: c.eula };
     crate::helper::handle(ctx, &["svc-save".to_string(), services::render_conf(&def)])?;
     if c.eula {
         crate::helper::handle(ctx, &["svc-start".to_string(), c.name.to_string()])?;
-        Ok(format!("Minecraft {} is installed and starting (it takes a minute). Players connect to this computer's address on port 25565.", c.version))
+        Ok(format!("{} {} is installed and starting (it takes a minute). Players connect to this computer's address on port 25565.", c.kind.label(), c.version))
     } else {
-        Ok(format!("Minecraft {} is installed but will not start until the EULA is accepted: run it again with the EULA accepted, or set eula=true in /srv/minecraft/{}/eula.txt.", c.version, c.name))
+        Ok(format!("{} {} is installed but will not start until the EULA is accepted: run it again with the EULA accepted, or set eula=true in /srv/minecraft/{}/eula.txt.", c.kind.label(), c.version, c.name))
     }
 }
 
@@ -342,6 +462,11 @@ mod tests {
                     let (to, url) = (a[a.iter().position(|x| *x == "-O").unwrap() + 1], *a.last().unwrap());
                     let body = if url == MANIFEST_URL { MANIFEST.to_string() }
                         else if url.contains("1.21.5.json") { VERSION.replace("\"majorVersion\":21", &format!("\"majorVersion\":{}", self.java)) }
+                        else if url.contains("fill.papermc.io/v3/projects/paper/versions/1.21.5/builds/latest") { format!(r#"{{"id":99,"channel":"STABLE","downloads":{{"server:default":{{"name":"paper-1.21.5-99.jar","checksums":{{"sha256":"{}"}},"url":"https://fill-data.papermc.io/v1/objects/x/paper-1.21.5-99.jar"}}}}}}"#, "a".repeat(64)) }
+                        else if url.ends_with("fill.papermc.io/v3/projects/paper") { r#"{"versions":{"1.21":["1.21.5","1.21.4","1.21.10"],"1.20":["1.20.6","26.1-pre1"]}}"#.to_string() }
+                        else if url.ends_with("meta.fabricmc.net/v2/versions/game") { r#"[{"version":"25w01a","stable":false},{"version":"1.21.5","stable":true},{"version":"1.21.4","stable":true}]"#.to_string() }
+                        else if url.ends_with("meta.fabricmc.net/v2/versions/loader") { r#"[{"version":"0.17.0-beta","stable":false},{"version":"0.16.14","stable":true}]"#.to_string() }
+                        else if url.ends_with("meta.fabricmc.net/v2/versions/installer") { r#"[{"version":"1.0.3","stable":true}]"#.to_string() }
                         else if url.contains("api.adoptium.net") { format!(r#"[{{"binary":{{"package":{{"link":"https://github.com/adoptium/temurin25-binaries/releases/download/x/jre.tar.gz","checksum":"{}"}}}}}}]"#, "a".repeat(64)) }
                         else { "JAR".to_string() };
                     std::fs::write(to, body).unwrap(); (0, String::new())
@@ -372,7 +497,7 @@ mod tests {
     #[test]
     fn creating_a_server_downloads_checks_and_defines_a_service() {
         let r = world("ok", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
-        let msg = create(&ctx, &Create { name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap();
+        let msg = create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap();
         assert!(msg.contains("starting"), "{msg}");
         assert_eq!(std::fs::read_to_string(r.join("srv/minecraft/mc/eula.txt")).unwrap().lines().last(), Some("eula=true"));
         let conf = std::fs::read_to_string(r.join("etc/exec85/services/mc.conf")).unwrap();
@@ -387,7 +512,7 @@ mod tests {
     fn a_java_alpine_does_not_have_is_downloaded_from_temurin_and_checked() {
         let r = world("temurin", 16_000_000); let mut f = fake(GOOD_SHA); f.java = 25; f.alpine_has_java = false;
         let ctx = Ctx { root: &r, runner: &f };
-        create(&ctx, &Create { name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap();
+        create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap();
         let conf = std::fs::read_to_string(r.join("etc/exec85/services/mc.conf")).unwrap();
         assert!(conf.contains("/opt/java-25/bin/java -Xmx4G"), "{conf}");
         let calls = f.calls.borrow().join("\n");
@@ -396,7 +521,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&r);
         // a damaged Java download installs nothing
         let r = world("temurin-bad", 16_000_000); let mut f = fake(GOOD_SHA); f.java = 25; f.alpine_has_java = false; f.java_sha = "b".repeat(64);
-        let e = create(&Ctx { root: &r, runner: &f }, &Create { name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap_err();
+        let e = create(&Ctx { root: &r, runner: &f }, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap_err();
         assert!(e.contains("damaged") && !r.join("opt/java-25").exists() && !r.join("srv/minecraft/mc").exists(), "{e}");
         let _ = std::fs::remove_dir_all(&r);
     }
@@ -421,7 +546,7 @@ mod tests {
     #[test]
     fn without_the_eula_nothing_is_started() {
         let r = world("noeula", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
-        let msg = create(&ctx, &Create { name: "mc", version: "1.21.5", ram_gb: 2, eula: false, user: "tester" }).unwrap();
+        let msg = create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 2, eula: false, user: "tester" }).unwrap();
         assert!(msg.contains("EULA"), "{msg}");
         assert!(std::fs::read_to_string(r.join("srv/minecraft/mc/eula.txt")).unwrap().ends_with("eula=false\n"));
         assert!(std::fs::read_to_string(r.join("etc/exec85/services/mc.conf")).unwrap().contains("autostart=false"));
@@ -432,7 +557,7 @@ mod tests {
     #[test]
     fn a_damaged_download_installs_nothing() {
         let r = world("bad", 16_000_000); let f = fake(&"f".repeat(40)); let ctx = Ctx { root: &r, runner: &f };
-        let e = create(&ctx, &Create { name: "mc", version: "1.21.5", ram_gb: 2, eula: true, user: "tester" }).unwrap_err();
+        let e = create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 2, eula: true, user: "tester" }).unwrap_err();
         assert!(e.contains("damaged"), "{e}");
         assert!(!r.join("srv/minecraft/mc").exists() && !r.join("etc/exec85/services/mc.conf").exists());
         let _ = std::fs::remove_dir_all(&r);
@@ -441,7 +566,7 @@ mod tests {
     #[test]
     fn bad_requests_are_refused_before_anything_is_downloaded() {
         let r = world("refuse", 3_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
-        let mk = |n: &'static str, v: &'static str, ram, u: &'static str| Create { name: n, version: v, ram_gb: ram, eula: true, user: u };
+        let mk = |n: &'static str, v: &'static str, ram, u: &'static str| Create { kind: ServerType::Vanilla, name: n, version: v, ram_gb: ram, eula: true, user: u };
         assert!(create(&ctx, &mk("mc", "1.21.5", 8, "tester")).unwrap_err().contains("enough memory"), "8 GB does not fit a 3 GB computer");
         assert!(create(&ctx, &mk("mc", "1.21.5", 3, "tester")).is_err(), "only 2, 4 or 8");
         assert!(create(&ctx, &mk("../x", "1.21.5", 2, "tester")).is_err());
@@ -452,9 +577,57 @@ mod tests {
     }
 
     #[test]
+    fn paper_and_fabric_answers_are_understood() {
+        assert_eq!(parse_paper_versions(r#"{"versions":{"1.21":["1.21.5","1.21.10","1.21.4"],"1.20":["1.20.6","1.21-pre1"]}}"#).unwrap(), ["1.21.10", "1.21.5", "1.21.4", "1.20.6"], "newest first, numerically, no pre-releases");
+        assert_eq!(parse_paper_versions(r#"{"versions":["1.20.6","1.21.4"]}"#).unwrap(), ["1.21.4", "1.20.6"], "the old flat list works too");
+        assert!(parse_paper_versions(r#"{"versions":5}"#).is_err() && parse_paper_versions(r#"{"versions":[]}"#).is_err());
+        let sum = "d".repeat(64);
+        let v3 = format!(r#"{{"downloads":{{"server:default":{{"url":"https://fill-data.papermc.io/v1/objects/x/p.jar","checksums":{{"sha256":"{sum}"}}}}}}}}"#);
+        assert_eq!(parse_paper_build_v3(&v3).unwrap(), ("https://fill-data.papermc.io/v1/objects/x/p.jar".into(), sum.clone()));
+        assert!(parse_paper_build_v3(r#"{"downloads":{}}"#).is_err());
+        let v2 = format!(r#"{{"builds":[{{"build":1,"channel":"default","downloads":{{"application":{{"name":"paper-1.21.5-1.jar","sha256":"{sum}"}}}}}},{{"build":2,"channel":"experimental","downloads":{{"application":{{"name":"paper-1.21.5-2.jar","sha256":"{sum}"}}}}}}]}}"#);
+        assert_eq!(parse_paper_builds_v2(&v2, "1.21.5").unwrap().0, "https://api.papermc.io/v2/projects/paper/versions/1.21.5/builds/1/downloads/paper-1.21.5-1.jar", "the newest build on the default channel");
+        assert!(parse_paper_builds_v2(&v2.replace("default", "experimental"), "1.21.5").is_err());
+        assert_eq!(parse_fabric_versions(r#"[{"version":"25w01a","stable":false},{"version":"1.21.5","stable":true}]"#).unwrap(), ["1.21.5"]);
+        assert_eq!(parse_fabric_stable(r#"[{"version":"0.17.0-beta","stable":false},{"version":"0.16.14","stable":true}]"#).unwrap(), "0.16.14");
+        assert_eq!(fabric_server_url("1.21.5", "0.16.14", "1.0.3"), "https://meta.fabricmc.net/v2/versions/loader/1.21.5/0.16.14/1.0.3/server/jar");
+        assert!(allowed_url(&fabric_server_url("1.21.5", "0.16.14", "1.0.3")) && allowed_url("https://fill-data.papermc.io/v1/objects/x/p.jar"));
+        assert_eq!(cmp_versions("1.21.10", "1.21.9"), std::cmp::Ordering::Greater);
+        assert!(ServerType::parse("Paper") == Some(ServerType::Paper) && ServerType::parse("forge").is_none());
+    }
+
+    #[test]
+    fn paper_and_fabric_servers_are_installed_like_vanilla_with_their_own_checks() {
+        for (kind, folder) in [(ServerType::Paper, "plugins"), (ServerType::Fabric, "mods")] {
+            let r = world(&format!("kind-{}", kind.id()), 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+            let msg = create(&ctx, &Create { kind, name: "srv", version: "1.21.5", ram_gb: 2, eula: true, user: "tester" }).unwrap();
+            assert!(msg.starts_with(kind.label()) && msg.contains("starting"), "{msg}");
+            assert!(r.join("srv/minecraft/srv/server.jar").exists() && r.join("srv/minecraft/srv").join(folder).is_dir(), "{folder} folder");
+            let conf = std::fs::read_to_string(r.join("etc/exec85/services/srv.conf")).unwrap();
+            assert!(conf.contains("-jar server.jar nogui") && conf.contains(kind.label()), "{conf}");
+            let calls = f.calls.borrow().join("\n");
+            assert_eq!(calls.contains("sha256sum"), kind == ServerType::Paper, "Paper is checked with sha256, Fabric publishes no checksum: {calls}");
+            assert!(calls.contains("-U Exec85"), "the download says who it is");
+            let _ = std::fs::remove_dir_all(&r);
+        }
+        let r = world("paper-bad", 16_000_000); let mut f = fake(GOOD_SHA); f.java_sha = "b".repeat(64);
+        let e = create(&Ctx { root: &r, runner: &f }, &Create { kind: ServerType::Paper, name: "srv", version: "1.21.5", ram_gb: 2, eula: true, user: "tester" }).unwrap_err();
+        assert!(e.contains("damaged") && !r.join("srv/minecraft/srv").exists(), "{e}");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn each_server_type_lists_its_own_versions() {
+        let r = world("lists", 8_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+        assert_eq!(versions(&ctx, ServerType::Paper).unwrap(), "latest 1.21.10\nrelease 1.21.10\nrelease 1.21.5\nrelease 1.21.4\nrelease 1.20.6\n");
+        assert_eq!(versions(&ctx, ServerType::Fabric).unwrap(), "latest 1.21.5\nrelease 1.21.5\nrelease 1.21.4\n");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
     fn the_version_list_shows_releases_newest_first() {
         let r = world("list", 8_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
-        assert_eq!(versions(&ctx).unwrap(), "latest 1.21.5\nrelease 1.21.5\nrelease 1.8.9\n");
+        assert_eq!(versions(&ctx, ServerType::Vanilla).unwrap(), "latest 1.21.5\nrelease 1.21.5\nrelease 1.8.9\n");
         let _ = std::fs::remove_dir_all(&r);
     }
 }

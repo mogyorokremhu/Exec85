@@ -30,6 +30,9 @@ fi
 ip link set lo up 2>/dev/null
 # Network: bring up every wired interface and ask the router for an address (in the background, so boot is not delayed).
 modprobe -a e1000 e1000e r8169 virtio_net igb 2>/dev/null
+# Sound cards (the codec drivers load themselves once the controller is up).
+modprobe -a snd_hda_intel snd_intel8x0 snd_ac97_codec snd_hda_codec_generic snd_hda_codec_realtek snd_hda_codec_hdmi 2>/dev/null
+mdev -s
 for n in /sys/class/net/*; do
   i=${n##*/}
   case "$i" in lo|wl*) continue ;; esac

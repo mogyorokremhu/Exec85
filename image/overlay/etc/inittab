@@ -1,5 +1,6 @@
 # Exec85 init table (busybox init). Order: early mounts + hardware, OpenRC services, then the UI.
 ::sysinit:/etc/exec85/early-boot.sh
+::sysinit:/etc/exec85/start-splash.sh
 ::wait:/sbin/openrc default
 tty1::respawn:/usr/bin/exec85
 ::ctrlaltdel:/sbin/reboot

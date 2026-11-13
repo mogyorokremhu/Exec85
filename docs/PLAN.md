@@ -335,7 +335,61 @@ Real hardware, on the Christmas laptop: BIOS or UEFI, drivers, Wi-Fi, 4 TB GPT d
 boot time and idle RAM numbers. Fix the issues found. Collect a hardware compatibility list. Also: the Debian
 comparison for boot time and idle RAM, and changing network settings from the Network app.
 
+### M6.6. More quick installers (decided, to be built after M6.5)
+Same recipe system and same look as the Minecraft server and Discord bot installers: pick the options, press Install,
+it runs as a normal service. Each one gets an app, a short terminal command and a CI test (install, start, answer).
+1. **Website** (nginx): a folder for your files, a port, a starter page; optional HTTPS with a self-made certificate.
+2. **File sharing** (Samba): choose folders to share, a user and password; visible to Windows and phones on the network.
+3. **Syncthing**: keeps folders in sync between your devices; its web page is limited to the local network.
+4. **Git server** (Forgejo): a small private GitHub; admin account created during install.
+5. **Media server**: music with Navidrome and videos/music over DLNA with MiniDLNA (Jellyfin needs a much heavier
+   runtime that does not fit this OS; revisit later).
+6. **Home-network ad blocker** (DNS blocker with a downloaded block list, kept up to date); the router or each device
+   must be pointed at this computer to use it.
+
+### M6.7. Remote access (decided, to be built)
+Security rules for all of it: **nothing is reachable from outside the local network by default**; a simple firewall
+(default: refuse incoming connections, allow only what an installed service needs); keys or strong passwords, no
+default passwords; every remote feature can be switched off in one place.
+1. **SSH server**: install and turn on from a screen; key-only login by default (with an easy "add my key" step, or a
+   password option you must choose on purpose); SFTP works too.
+2. **Web dashboard**: open the server's status, services, logs, disks and pendrives from a browser on another
+   computer. Log in with your Exec85 account. Plain HTTP only on the local network; an HTTPS option (self-made
+   certificate) follows. Needs a small web server inside the OS (no extra libraries), so it is a bigger job.
+3. **VPN (WireGuard)**: create the server, show a QR code / config for each phone or laptop; the router must forward
+   one port, and the screen explains how.
+4. **Wake-on-LAN**: turn it on for this computer's network card and show the address needed to wake it from a phone
+   (the sleeping computer cannot send the signal itself); also a "wake another computer" button.
+Suggested order: SSH, firewall, WireGuard, Wake-on-LAN, then the web dashboard; installers: website, Samba,
+Syncthing, Forgejo, ad blocker, media server.
+
+### M6.8. Updates, uptime monitor with alerts, Vaultwarden (decided, to be built)
+1. **Updates, detected automatically.** Two kinds, shown together in one Updates screen and as a notice in the status
+   bar when something is waiting:
+   - *Software updates* (`apk`): checked once a day; the screen lists what would change; install now or at a chosen
+     time (never a surprise restart).
+   - *Exec85 updates*: the system looks for a newer release in the release list, downloads the image, **checks its
+     checksum (and a signature before the public release)**, unpacks it beside the running system, switches the boot
+     entry to it, and keeps the previous version as a fallback boot entry. Your files, settings, services and `/srv`
+     data are kept. A bad update must never leave the computer unbootable, so this is designed first and tested in CI by
+     updating a running virtual machine from one build to the next, including a deliberately damaged download.
+   - Honest limit: while the repository is private, the release list cannot be read without a token; the
+     feed address is a setting, so this works fully once the project is public (or with a token until then).
+2. **Uptime monitor with alerts**, built into Exec85 (a small background program, almost no RAM; Uptime Kuma is a
+   heavy Node app and is not needed). Checks: a website (HTTP status and speed), a port, ping, one of your services,
+   disk space, disk health and temperature. Each check has an interval. **Alerts** go to a Discord webhook or to ntfy
+   (push notifications to your phone), with quiet hours, "only after N failures in a row" and a message when it
+   recovers. The system also uses it for its own alerts: a service crashed, a disk is nearly full, an update is waiting.
+3. **Vaultwarden** (your own password manager, works with the Bitwarden apps and browser extensions): quick installer
+   with the same screens as the others; admin token typed in a hidden field; new sign-ups switched off after you
+   have made your account; data kept in `/srv/vaultwarden`, with a reminder to back it up. The Bitwarden apps only work
+   over **HTTPS with a certificate they trust**, so this depends on the website/reverse-proxy and DuckDNS items (or
+   on reaching it through the VPN); the screen explains which option you chose and what is missing.
+
 ### M7. Public release
+**Before going public:** replace the installer music (`image/assets/audio/installer.mp3` is third-party and not licensed for
+redistribution) and remove it from the git history; see `image/assets/audio/README.md`.
+
 Release workflow, signed checksums, install instructions (`docs/INSTALL.md`),
 USB-writing guide for Windows, Linux and macOS, license and third-party
 notices, then the repo goes public.

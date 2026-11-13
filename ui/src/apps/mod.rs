@@ -8,6 +8,7 @@ use crate::layout::Rect;
 use crate::paint::Painter;
 pub mod calculator;
 pub mod clock;
+pub mod discordbot;
 pub mod diskusage;
 pub mod minecraft;
 pub mod monitor;
@@ -25,14 +26,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft }
+pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft, DiscordBot }
 
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Kind::Notepad => "notepad", Kind::Terminal => "terminal", Kind::Paint => "paint", Kind::Monitor => "monitor",
             Kind::DiskUsage => "diskusage", Kind::Network => "network", Kind::Clock => "clock",
-            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft",
+            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft", Kind::DiscordBot => "discordbot",
         }
     }
 }
@@ -91,6 +92,7 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Notepad => Box::new(notepad::Notepad::new(env)),
         Kind::Paint => Box::new(paint::Paint::new(env)),
         Kind::Monitor => Box::new(monitor::Monitor::new()),
+        Kind::DiscordBot => Box::new(discordbot::DiscordBot::new(helper_backend())),
         Kind::Minecraft => Box::new(minecraft::Minecraft::new(helper_backend(), minecraft::Minecraft::system_memory_kb())),
         Kind::Services => Box::new(services::Services::new(helper_backend())),
         Kind::Software => Box::new(software::Software::new(helper_backend())),
@@ -141,4 +143,46 @@ pub fn edit_text(s: &mut String, k: &Key, max: usize) -> bool {
     if k.code == code::BACKSPACE { return s.pop().is_some(); }
     if let Some(c) = k.ch() { if !c.is_control() && s.chars().count() < max { s.push(c); return true; } }
     false
+}
+
+/// Break `s` into lines at most `w` cells wide, at spaces where possible (a word longer than a line is cut).
+pub fn wrap_text(s: &str, w: usize) -> Vec<String> {
+    let w = w.max(1);
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        while word.len() > w { if !cur.is_empty() { lines.push(std::mem::take(&mut cur)); } lines.push(word.drain(..w).collect()); }
+        let word: String = word.into_iter().collect();
+        if cur.is_empty() { cur = word; }
+        else if cur.chars().count() + 1 + word.chars().count() <= w { cur.push(' '); cur.push_str(&word); }
+        else { lines.push(std::mem::take(&mut cur)); cur = word; }
+    }
+    if !cur.is_empty() { lines.push(cur); }
+    lines
+}
+
+/// A message that may be long: wrapped over up to `max` lines, ending at row `bottom`. Returns how many lines were drawn.
+pub fn draw_note(p: &mut Painter, x: usize, bottom: usize, w: usize, msg: &str, fg: u32, bg: u32, max: usize) -> usize {
+    let mut lines = wrap_text(msg, w);
+    if lines.len() > max { lines.truncate(max); if let Some(l) = lines.last_mut() { *l = format!("{}...", l.chars().take(w.saturating_sub(3)).collect::<String>()); } }
+    let n = lines.len();
+    for (i, l) in lines.iter().enumerate() { p.clip(x, (bottom + 1).saturating_sub(n) + i, w, l, fg, bg); }
+    n
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::wrap_text;
+    #[test]
+    fn long_messages_are_wrapped_not_cut_off() {
+        let msg = "Minecraft 26.3 is installed and starting (it takes a minute). Players connect to this computer's address on port 25565.";
+        let lines = wrap_text(msg, 30);
+        assert!(lines.len() >= 4 && lines.iter().all(|l| l.chars().count() <= 30), "{lines:?}");
+        assert_eq!(lines.join(" "), msg, "nothing is lost");
+        assert_eq!(wrap_text("short", 30), vec!["short"]);
+        assert_eq!(wrap_text("", 30), Vec::<String>::new());
+        assert_eq!(wrap_text("abcdefghij", 4), vec!["abcd", "efgh", "ij"], "a word longer than a line is cut");
+        assert_eq!(wrap_text("a b", 0), vec!["a", "b"], "a zero width does not loop forever");
+    }
 }

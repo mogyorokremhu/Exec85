@@ -5,6 +5,8 @@
 //!   --shell      the file-browser shell
 //!   --ppm FILE   draw the shell into an image file (testing)
 mod account;
+mod audio;
+mod bot;
 mod app;
 mod apps;
 mod cmds;
@@ -24,6 +26,7 @@ mod login;
 mod mc;
 mod paint;
 mod shell;
+mod splash;
 mod supervisor;
 mod helper;
 mod services;
@@ -103,19 +106,22 @@ fn save_sleep(minutes: u32) {
 struct Screen { display: display::Display, m: Metrics, canvas: Canvas }
 
 impl Screen {
-    fn open() -> Screen {
+    /// Try to take the display; the error says why not.
+    fn try_open() -> Result<Screen, String> {
         // Stop the text console from drawing over us (needs permission; fine if it is refused).
         if let Ok(tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty0") {
             use std::os::fd::AsRawFd;
             // KDSETMODE = 0x4B3A, KD_GRAPHICS = 1
             unsafe { sys::ioctl(tty.as_raw_fd(), 0x4B3A, 1 as std::os::raw::c_ulong) };
         }
-        match display::Display::open() {
-            Ok(display) => {
-                let m = Metrics::for_height(display.height);
-                let canvas = Canvas::new(display.width, display.height);
-                Screen { display, m, canvas }
-            }
+        let display = display::Display::open().map_err(|e| e.to_string())?;
+        let m = Metrics::for_height(display.height);
+        let canvas = Canvas::new(display.width, display.height);
+        Ok(Screen { display, m, canvas })
+    }
+    fn open() -> Screen {
+        match Screen::try_open() {
+            Ok(s) => s,
             Err(e) => { log(&format!("EXEC85_ERROR no display: {e}")); thread::sleep(Duration::from_secs(3)); std::process::exit(1); }
         }
     }
@@ -181,6 +187,23 @@ fn stage_login() -> ! {
 
 enum Event { Key(Key), Wake }
 
+/// The boot screen, shown from early in the boot until the first real screen takes over (the supervisor stops it).
+fn stage_splash() -> ! {
+    let _ = stdfs::write("/run/exec85-splash.pid", std::process::id().to_string());
+    log("EXEC85_SPLASH starting");
+    // This starts right after the drivers were loaded, so the display may take a moment to appear: keep trying for 20 seconds.
+    let mut s = None;
+    for _ in 0..200 { match Screen::try_open() { Ok(x) => { s = Some(x); break; } Err(_) => thread::sleep(Duration::from_millis(100)) } }
+    let Some(mut s) = s else { log("EXEC85_SPLASH no display"); std::process::exit(0) };
+    log("EXEC85_SPLASH shown");
+    let (start, mode) = (std::time::Instant::now(), read_mode());
+    loop {
+        splash::render(&mut s.canvas, mode, start.elapsed().as_secs_f64(), env!("CARGO_PKG_VERSION"));
+        s.show();
+        thread::sleep(Duration::from_millis(80));
+    }
+}
+
 fn stage_installer() -> ! {
     load_layout();
     let mut s = Screen::open();
@@ -197,6 +220,9 @@ fn stage_installer() -> ! {
     let testing = supervisor::cmdline_has("exec85.testing");
     let mut inst = installer::Installer::new(cols, rows, system_mode(), installer::load_timezones(Path::new("/usr/share/zoneinfo")), testing, Box::new(disks::system_disks), runner);
 
+    // Music while installing, if the computer has a sound card (F8 switches it off and on).
+    let mut music = audio::Music::start_default();
+    inst.music = music.as_ref().map(|m| !m.paused());
     installer::draw(&inst, &mut s.canvas, &s.m);
     s.show();
     announce("installer", &s);
@@ -207,6 +233,7 @@ fn stage_installer() -> ! {
         while let Ok(e) = rx.try_recv() { events.push(e); }
         for e in events {
             match e {
+                Event::Key(k) if k.code == keys::code::F8 => { if let Some(m) = music.as_mut() { m.toggle(); inst.music = Some(!m.paused()); } }
                 Event::Key(k) => match inst.handle(k) {
                     Some(installer::Outcome::Reboot) => std::process::exit(supervisor::EXIT_REBOOT),
                     Some(installer::Outcome::Live) => std::process::exit(supervisor::EXIT_TRY_LIVE),
@@ -314,6 +341,7 @@ fn render_to_file(args: &[String]) {
             for k in parsed { inst.handle(k); }
             installer::draw(&inst, &mut c, &m);
         }
+        "splash" => { splash::render(&mut c, mode, 1.0, env!("CARGO_PKG_VERSION")); }
         "login" => {
             let mut lg = login::Login::new(cols, rows, mode, keys::Layout::Us, "exec85".into(), Some("tester".into()));
             let deny = |_: &str, _: &str| Err(account::AuthError::BadPassword);
@@ -336,7 +364,7 @@ fn main() {
     if let Some(name) = args.first().and_then(|a| Path::new(a).file_name()).map(|n| n.to_string_lossy().into_owned()) {
         if let Some(code) = cmds::run(&name, &args[1..]) { std::process::exit(code); }
         // `svc` and `pkg` are short forms of `exec85 --svc` and `exec85 --pkg`.
-        if name == "svc" || name == "pkg" || name == "mc" {
+        if name == "svc" || name == "pkg" || name == "mc" || name == "bot" {
             let mut a = vec![format!("--{name}")];
             a.extend(args[1..].iter().cloned());
             std::process::exit(helper::cli(&a));
@@ -349,11 +377,12 @@ fn main() {
     match args.get(1).map(String::as_str) {
         Some("--version") => println!("exec85 {}", env!("CARGO_PKG_VERSION")),
         Some("--ppm") => render_to_file(&args[1..]),
+        Some("--splash") => stage_splash(),
         Some("--installer") => stage_installer(),
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
         Some("--helperd") => helper::serve(),
-        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") => std::process::exit(helper::cli(&args[1..])),
+        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") | Some("--bot") => std::process::exit(helper::cli(&args[1..])),
         None => supervisor::run(),
         Some(other) => { eprintln!("unknown option {other}; try --version"); std::process::exit(2); }
     }

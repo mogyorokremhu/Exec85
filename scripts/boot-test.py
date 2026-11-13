@@ -174,7 +174,7 @@ def typed(vm, keys, prefix, **final):
 
 
 def scenario_live():
-    vm = VM("live", cdrom=iso)
+    vm = VM("live", cdrom=iso, extra=["-audiodev", "none,id=snd0", "-device", "intel-hda", "-device", "hda-duplex,audiodev=snd0"])
     try:
         m = vm.wait_for(r"EXEC85_READY uptime=([\d.]+)", 600 if SLOW else 120)
         step("live: first screen drawn", m is not None, "no EXEC85_READY on serial")
@@ -182,10 +182,19 @@ def scenario_live():
         d = vm.wait_for(r"EXEC85_DISPLAY (\w+) (\d+)x(\d+)", 10)
         if d: result.update(display_driver=d[1], screen=f"{d[2]}x{d[3]}")
         step("live: starts in the installer", vm.wait_for(r"EXEC85_SCREEN installer", 10) is not None)
+        t = vm.text()
+        # On this fast machine the first real screen is ready as soon as the display exists, so the boot screen may be stopped before it
+        # has drawn a frame; what must hold is that it starts first and never gets in the way of the real screen.
+        step("live: the boot screen starts first and gets out of the way", "EXEC85_SPLASH starting" in t and t.index("EXEC85_SPLASH starting") < t.index("EXEC85_SCREEN installer") and "EXEC85_ERROR" not in t, "no EXEC85_SPLASH starting line before the installer (or a display error)")
+        step("live: the kernel is quiet on the console", "Linux version" not in t and "Command line:" not in t, "kernel start-up messages are still printed")
         mm = vm.wait_for(r"EXEC85_MEM total_kb=(\d+) used_kb=(\d+) exec85_rss_kb=(\d+)", 120)
         step("live: idle memory report", mm is not None)
         result.update(mem_total_kb=int(mm[1]), mem_used_kb=int(mm[2]), exec85_rss_kb=int(mm[3]))
         step("live: installer welcome screen (dark)", bar_pixel(vm.screenshot("1-welcome")) == DARK["bar"])
+        d = vm.wait_line("EXEC85_INSTALLER", lambda d: d.get("music") in ("on", "off"), 30)
+        step("live: the installer plays its music when there is a sound card", d is not None and d.get("music") == "on", str(vm.lines("EXEC85_INSTALLER")[-1:]))
+        press(vm, "f8", "EXEC85_INSTALLER", music="off")
+        press(vm, "f8", "EXEC85_INSTALLER", music="on")
 
         # Welcome -> "Try Exec85 without installing" -> the shell, as root
         n = len(vm.lines("EXEC85_INSTALLER"))
@@ -649,6 +658,27 @@ def scenario_testing():
             dump_file(vm, "/tmp/c.log", 10)
             print("SVC>", [l for l in vm.text().splitlines() if "name=craft " in l][-3:], flush=True)
             raise
+        # Paper and Fabric: the real lists and downloads, checked; installed without starting (the vanilla server above is running)
+        for kind, folder in (("paper", "plugins"), ("fabric", "mods")):
+            terminal_run(vm, f"mc versions {kind} | head -1", "latest_", 120, f"minecraft: the {kind} version list comes from its official source")
+            terminal_run(vm, f"mc create {kind}1 $(mc versions {kind} | head -1 | cut -d' ' -f2) 2 --type {kind} > /tmp/{kind}.txt 2>&1; echo K{kind[0]}$((5-3))", f"K{kind[0]}2", 900, f"minecraft: the {kind} install command finishes")
+            try: terminal_run(vm, f"ls /srv/minecraft/{kind}1 | tr '\\n' ' '", f"re:{folder}", 30, f"minecraft: {kind} is installed (download checked, {folder} folder made)")
+            except AssertionError:
+                dump_file(vm, f"/tmp/{kind}.txt", 6)
+                raise
+
+        # Discord bots, Python and Node.js, installed for real with a fake token: the real library must run and refuse the token
+        FAKE = "fake-token-for-tests-only-0123456789"
+        for lang, name, needle, tag in (("python", "pybot", "Improper token", "D1"), ("node", "jsbot", "invalid token", "D2")):
+            terminal_run(vm, f"export DISCORD_TOKEN={FAKE}; bot create {name} {lang} > /tmp/{name}.txt 2>&1; echo B{tag}$((5-3))", f"B{tag}2", 900, f"bot: the {lang} bot install command finishes")
+            try: terminal_run(vm, f"sleep 30; grep -c '{needle}' /var/log/exec85/{name}.log; echo C{tag}$((5-3))", f"re:[1-9]\\d*C{tag}2", 240, f"bot: the {lang} bot runs and the Discord library refuses the fake token")
+            except AssertionError:
+                dump_file(vm, f"/tmp/{name}.txt", 6)
+                terminal_run(vm, f"tail -3 /var/log/exec85/{name}.log | cut -c1-66; echo L{tag}$((5-3))", f"L{tag}2", 20, "diagnostic")
+                print("BOTLOG>", app_line(vm, "terminal", 1), flush=True)
+                raise
+            terminal_run(vm, f"ls -l /srv/bots/{name}/.env | cut -c1-10", "-rw-------", 30, f"bot: the {lang} bot's token file is private")
+            terminal_run(vm, f"svc stop {name}; echo S{tag}$((5-3))", f"S{tag}2", 60, f"bot: the {lang} bot can be stopped")
     finally:
         vm.stop()
 
