@@ -60,3 +60,5 @@ jobs:
             results/
             results-testing/
             !results/disk-*.img
+            !results-testing/id_test*
+            !results-testing/usb.img

@@ -627,6 +627,9 @@ def scenario_testing():
         step("ssh: logging in with the key works from outside", ok, out[-300:])
         r = subprocess.run(["ssh", "-p", "2222", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "BatchMode=yes", "-o", "PreferredAuthentications=password", "-o", "PubkeyAuthentication=no", "-o", "ConnectTimeout=8", "tester@127.0.0.1", "echo", "BAD"], capture_output=True, text=True)
         step("ssh: a password login is refused", "BAD" not in r.stdout and "Permission denied" in r.stderr, (r.stdout + r.stderr)[-300:])
+        for f in ("id_test", "id_test.pub"):   # the test key is thrown away (and must not end up in the saved results)
+            try: os.remove(os.path.join(outdir, f))
+            except OSError: pass
 
         # ---- network settings: a fixed address and back to automatic, with the network still working each time ----
         terminal_run(vm, "exec85 --net set eth0 static 10.0.2.15/24 10.0.2.2 10.0.2.3 > /tmp/n.txt 2>&1; echo N1$((5-3))", "N12", 90, "network: a fixed address is applied")
