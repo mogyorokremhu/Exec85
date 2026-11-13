@@ -28,6 +28,7 @@ mod netapply;
 mod netconf;
 mod mc;
 mod paint;
+mod recipes;
 mod shell;
 mod splash;
 mod supervisor;

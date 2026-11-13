@@ -79,6 +79,7 @@ impl Shell {
             Out::Close => self.close(i),
             Out::Msg(m) => self.app.msg = Some(m),
             Out::OpenFile(p) => self.open_file(p),
+            Out::Open(kind) => self.open(kind),
         }
     }
 

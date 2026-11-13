@@ -7,6 +7,7 @@ use crate::keys::Key;
 use crate::layout::Rect;
 use crate::paint::Painter;
 pub mod calculator;
+pub mod catalog;
 pub mod clock;
 pub mod discordbot;
 pub mod diskusage;
@@ -27,14 +28,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft, DiscordBot, Remote }
+pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft, DiscordBot, Remote, Catalog }
 
 impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Kind::Notepad => "notepad", Kind::Terminal => "terminal", Kind::Paint => "paint", Kind::Monitor => "monitor",
             Kind::DiskUsage => "diskusage", Kind::Network => "network", Kind::Clock => "clock",
-            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft", Kind::DiscordBot => "discordbot", Kind::Remote => "remote",
+            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft", Kind::DiscordBot => "discordbot", Kind::Remote => "remote", Kind::Catalog => "catalog",
         }
     }
 }
@@ -54,7 +55,7 @@ impl Env {
 
 /// What an app asks the shell to do after handling a key or a tick.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Out { None, Close, Msg(String), OpenFile(PathBuf) }
+pub enum Out { None, Close, Msg(String), OpenFile(PathBuf), Open(Kind) }
 
 pub trait Application {
     fn kind(&self) -> Kind;
@@ -93,6 +94,7 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Notepad => Box::new(notepad::Notepad::new(env)),
         Kind::Paint => Box::new(paint::Paint::new(env)),
         Kind::Monitor => Box::new(monitor::Monitor::new()),
+        Kind::Catalog => Box::new(catalog::Catalog::new(helper_backend())),
         Kind::Remote => Box::new(remote::Remote::new(helper_backend())),
         Kind::DiscordBot => Box::new(discordbot::DiscordBot::new(helper_backend())),
         Kind::Minecraft => Box::new(minecraft::Minecraft::new(helper_backend(), minecraft::Minecraft::system_memory_kb())),

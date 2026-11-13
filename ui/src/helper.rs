@@ -37,7 +37,11 @@ pub fn decode_request(line: &str) -> Vec<String> { line.split_whitespace().map(u
 
 // ---- running commands (replaceable in tests) -------------------------------------------------------------------
 
-pub trait Runner { fn run(&self, cmd: &str, args: &[&str]) -> (i32, String); }
+pub trait Runner {
+    fn run(&self, cmd: &str, args: &[&str]) -> (i32, String);
+    /// Like `run`, with text on standard input (for passwords: they never go on a command line). The default ignores the input; real runners pass it on.
+    fn run_input(&self, cmd: &str, args: &[&str], input: &str) -> (i32, String) { let _ = input; self.run(cmd, args) }
+}
 
 pub struct SysRunner;
 impl Runner for SysRunner {
@@ -46,6 +50,17 @@ impl Runner for SysRunner {
             Ok(o) => { let mut s = String::from_utf8_lossy(&o.stdout).into_owned(); s.push_str(&String::from_utf8_lossy(&o.stderr)); (o.status.code().unwrap_or(-1), s) }
             Err(e) => (-1, format!("cannot run {cmd}: {e}")),
         }
+    }
+    fn run_input(&self, cmd: &str, args: &[&str], input: &str) -> (i32, String) { SysRunner::spawn_with_input(cmd, args, input) }
+}
+
+impl SysRunner {
+    fn spawn_with_input(cmd: &str, args: &[&str], input: &str) -> (i32, String) {
+        use std::io::Write as _;
+        let child = std::process::Command::new(cmd).args(args).env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn();
+        let Ok(mut child) = child else { return (-1, format!("cannot run {cmd}")) };
+        if let Some(mut si) = child.stdin.take() { let _ = si.write_all(input.as_bytes()); }
+        match child.wait_with_output() { Ok(o) => { let mut s = String::from_utf8_lossy(&o.stdout).into_owned(); s.push_str(&String::from_utf8_lossy(&o.stderr)); (o.status.code().unwrap_or(-1), s) } Err(e) => (-1, e.to_string()) }
     }
 }
 
@@ -246,6 +261,14 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "wifi-scan" => crate::netapply::wifi_scan(ctx, arg(1)?),
         "wifi-connect" => crate::netapply::wifi_connect(ctx, arg(1)?, arg(2)?, w.get(3).map_or("", String::as_str)),
         "wifi-forget" => crate::netapply::wifi_forget(ctx, arg(1)?),
+        "recipe-list" => Ok(crate::recipes::list(ctx)),
+        "recipe-install" => {
+            // recipe-install ID USER key=value key=value ...  (values may contain spaces: they travel escaped)
+            let (id, user) = (arg(1)?, arg(2)?);
+            let values: Vec<(String, String)> = w[3..].iter().filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect();
+            crate::recipes::install(ctx, id, &values, user)
+        }
+        "recipe-remove" => crate::recipes::remove(ctx, arg(1)?),
         "bot-create" => {
             let (name, lang, kind, srcarg, token, user) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?, arg(6)?);
             let lang = crate::bot::Lang::parse(lang).ok_or("The language must be python or node.")?;
