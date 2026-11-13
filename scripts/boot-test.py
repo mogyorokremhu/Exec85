@@ -656,6 +656,14 @@ def scenario_testing():
             dump_file(vm, "/tmp/c.log", 10)
             print("SVC>", [l for l in vm.text().splitlines() if "name=craft " in l][-3:], flush=True)
             raise
+        # Paper and Fabric: the real lists and downloads, checked; installed without starting (the vanilla server above is running)
+        for kind, folder in (("paper", "plugins"), ("fabric", "mods")):
+            terminal_run(vm, f"mc versions {kind} | head -1", "latest_", 120, f"minecraft: the {kind} version list comes from its official source")
+            terminal_run(vm, f"mc create {kind}1 $(mc versions {kind} | head -1 | cut -d' ' -f2) 2 --type {kind} > /tmp/{kind}.txt 2>&1; echo K{kind[0]}$((5-3))", f"K{kind[0]}2", 900, f"minecraft: the {kind} install command finishes")
+            try: terminal_run(vm, f"ls /srv/minecraft/{kind}1 | tr '\\n' ' '", f"re:{folder}", 30, f"minecraft: {kind} is installed (download checked, {folder} folder made)")
+            except AssertionError:
+                dump_file(vm, f"/tmp/{kind}.txt", 6)
+                raise
     finally:
         vm.stop()
 
