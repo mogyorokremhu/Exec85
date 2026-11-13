@@ -486,7 +486,7 @@ def scenario_testing():
     subprocess.run(["mcopy", "-i", usb, os.path.join(outdir, "hello.txt"), "::HELLO.TXT"], check=True)
     # the USB controller and the stick's disk exist from the start; the stick itself is plugged in later with device_add
     vm = VM("testing", cdrom=iso, mem=3072, extra=["-device", "qemu-xhci,id=xhci", "-drive", f"if=none,id=usbd,file={usb},format=raw",
-                                                      "-netdev", "user,id=n0,hostfwd=tcp::2222-:22,hostfwd=tcp::8081-:8080", "-device", "e1000e,netdev=n0"])   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
+                                                      "-netdev", "user,id=n0,hostfwd=tcp::2222-:22,hostfwd=tcp::8081-:8080,hostfwd=tcp::8090-:8090", "-device", "e1000e,netdev=n0"])   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
     try:
         step("testing: installer is up", vm.wait_for(r"EXEC85_SCREEN installer", 600 if SLOW else 120) is not None)
         press(vm, "ret", I, step="theme")
@@ -734,6 +734,17 @@ def scenario_testing():
                 raise
             terminal_run(vm, f"ls -l /srv/bots/{name}/.env | cut -c1-10", "-rw-------", 30, f"bot: the {lang} bot's token file is private")
             terminal_run(vm, f"svc stop {name}; echo S{tag}$((5-3))", f"S{tag}2", 60, f"bot: the {lang} bot can be stopped")
+
+        # Quick installers from the app catalog: each is installed for real and must answer
+        terminal_run(vm, "mkdir -p /srv/www/site; echo catalog-site-ok > /srv/www/site/index.html; app install website; echo W$((5-3))", "W2", 600, "catalog: the website installer finishes")
+        step("catalog: the website answers from outside", wait_probe(8090, True, 60))
+        terminal_run(vm, "wget -qO- http://127.0.0.1:8090/; echo W$((6-3))", "catalog-site-ok", 30, "catalog: the website serves the page")
+        terminal_run(vm, "app list | grep website; echo W$((6-2))", "installed", 30, "catalog: the website shows as installed")
+        terminal_run(vm, "app install syncthing gui_password=longenough1 > /tmp/st.txt 2>&1; echo Y$((5-3))", "Y2", 900, "catalog: the Syncthing installer finishes")
+        terminal_run(vm, "sleep 20; wget -S -O /dev/null http://127.0.0.1:8384/ 2>&1 | grep -c HTTP/; echo Z$((5-3))", "re:[1-9]\\d*Z2", 120, "catalog: Syncthing's web page answers")
+        terminal_run(vm, "app install transmission password=longenough1 > /tmp/tr.txt 2>&1; echo T$((5-3))", "T2", 900, "catalog: the Transmission installer finishes")
+        terminal_run(vm, "sleep 15; wget -S -O /dev/null http://127.0.0.1:9091/transmission/rpc 2>&1 | grep -c HTTP/; echo U$((5-3))", "re:[1-9]\\d*U2", 120, "catalog: Transmission's web page answers")
+        terminal_run(vm, "app remove website; app list | grep website; echo R$((5-3))", "re:website +no.*R2|no.*R2", 60, "catalog: the website can be removed")
     finally:
         vm.stop()
 

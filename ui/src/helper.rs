@@ -503,6 +503,15 @@ pub fn cli(args: &[String]) -> i32 {
             let (kind, arg) = match (opt("--folder"), opt("--git")) { (Some(f), _) => ("folder", f), (None, Some(g)) => ("git", g), _ => ("starter", "-".to_string()) };
             show(call(&["bot-create", name, lang, kind, &arg, &token, &user]))
         }
+        ["--app", "list"] => show(call(&["recipe-list"])),
+        ["--app", "remove", id] => show(call(&["recipe-remove", id])),
+        ["--app", "install", id, rest @ ..] => {
+            // app install ID key=value ...  (the catalog screen is the nicer way to type a password)
+            let user = std::env::var("USER").unwrap_or_default();
+            let mut w: Vec<&str> = vec!["recipe-install", id, &user];
+            w.extend(rest.iter().copied());
+            show(call(&w))
+        }
         ["--ssh", "status"] => show(call(&["ssh-status"])),
         ["--ssh", "disable"] => show(call(&["ssh-disable"])),
         ["--ssh", "enable", rest @ ..] => {
