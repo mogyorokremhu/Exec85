@@ -383,7 +383,7 @@ pub fn create(ctx: &Ctx, c: &Create) -> Result<String, String> {
     if code != 0 { return Err(format!("Could not give the folder to {}: {}", c.user, out.trim())); }
 
     let def = ServiceDef { name: c.name.into(), description: format!("{} server {}", c.kind.label(), c.version), command: server_command(&java, c.ram_gb),
-        dir: format!("/srv/minecraft/{}", c.name), user: c.user.into(), env: vec![], autostart: c.eula };
+        dir: format!("/srv/minecraft/{}", c.name), user: c.user.into(), env: vec![], autostart: c.eula, ports: "25565/tcp".into() };
     crate::helper::handle(ctx, &["svc-save".to_string(), services::render_conf(&def)])?;
     if c.eula {
         crate::helper::handle(ctx, &["svc-start".to_string(), c.name.to_string()])?;

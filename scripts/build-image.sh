@@ -29,7 +29,7 @@ rm -rf "${R:?}"; mkdir -p "$R/etc/apk" "$R/var/cache/apk"
 cp /etc/apk/repositories "$R/etc/apk/"
 apk add --root "$R" --initdb --no-cache --keys-dir /etc/apk/keys \
     alpine-baselayout alpine-release busybox busybox-openrc openrc mdev-conf kmod \
-    sfdisk e2fsprogs dosfstools tzdata doas mkinitfs ssl_client ca-certificates-bundle >/dev/null
+    sfdisk e2fsprogs dosfstools tzdata doas mkinitfs ssl_client ca-certificates-bundle nftables >/dev/null
 # Sound: a looping player for the installer's music, and the mixer tool. Optional: a missing package only means no music.
 for pkg in mpg123 mpg123-alsa alsa-utils; do
     apk add --root "$R" --no-cache --keys-dir /etc/apk/keys "$pkg" >/dev/null 2>&1 || echo "WARNING: package $pkg is not available; the installer will have no music"
@@ -71,7 +71,7 @@ rm -rf "${R:?}/boot" "${R:?}/var/cache/apk" "${R:?}/usr/share/man" "${R:?}/usr/s
 if [ -f "$SRC/image/assets/audio/installer.mp3" ]; then install -D -m 644 "$SRC/image/assets/audio/installer.mp3" "$R/usr/share/exec85/audio/installer.mp3"; fi
 install -D -m 755 "$BIN" "$R/usr/bin/exec85"
 # Our own terminal commands are this same program under other names.
-for c in dir disk about get svc pkg mc bot; do ln -sf exec85 "$R/usr/bin/$c"; done
+for c in dir disk about get svc pkg mc bot fw; do ln -sf exec85 "$R/usr/bin/$c"; done
 cp -a "$SRC/image/overlay/." "$R/"
 mkdir -p "$R/proc" "$R/sys" "$R/dev" "$R/run" "$R/tmp" "$R/root"
 # OpenRC: only the 'default' runlevel is used for now (user services live there from milestone 5).

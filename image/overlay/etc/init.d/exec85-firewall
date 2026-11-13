@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+# Loads the firewall rules before the network comes up, so there is no moment when everything is open.
+description="Exec85 firewall"
+
+depend() {
+	need localmount
+	before net
+}
+
+start() {
+	ebegin "Loading the firewall"
+	if [ -f /etc/exec85/firewall.nft ]; then
+		nft -f /etc/exec85/firewall.nft
+		eend $?
+	else
+		eend 0
+	fi
+}
