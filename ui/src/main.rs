@@ -188,11 +188,11 @@ fn stage_splash() -> ! {
     let _ = stdfs::write("/run/exec85-splash.pid", std::process::id().to_string());
     let mut s = Screen::open();
     log("EXEC85_SPLASH shown");
-    let start = std::time::Instant::now();
+    let (start, mode) = (std::time::Instant::now(), read_mode());
     loop {
-        splash::render(&mut s.canvas, start.elapsed().as_secs_f64(), None, env!("CARGO_PKG_VERSION"));
+        splash::render(&mut s.canvas, mode, start.elapsed().as_secs_f64(), env!("CARGO_PKG_VERSION"));
         s.show();
-        thread::sleep(Duration::from_millis(66));
+        thread::sleep(Duration::from_millis(80));
     }
 }
 
@@ -333,7 +333,7 @@ fn render_to_file(args: &[String]) {
             for k in parsed { inst.handle(k); }
             installer::draw(&inst, &mut c, &m);
         }
-        "splash" => { splash::render(&mut c, 2.0, Some(0.6), env!("CARGO_PKG_VERSION")); }
+        "splash" => { splash::render(&mut c, mode, 1.0, env!("CARGO_PKG_VERSION")); }
         "login" => {
             let mut lg = login::Login::new(cols, rows, mode, keys::Layout::Us, "exec85".into(), Some("tester".into()));
             let deny = |_: &str, _: &str| Err(account::AuthError::BadPassword);
