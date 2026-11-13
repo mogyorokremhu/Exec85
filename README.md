@@ -2,7 +2,7 @@
 
 A lightweight, keyboard-driven, Linux-based server OS with a 1985-style tiled interface.
 
-> **Status:** early alpha. You can install Exec85 onto a disk (BIOS or UEFI), log in, and use the keyboard-driven shell with its apps (Explorer, Notepad, Terminal, Paint, System monitor, Disk usage, Network status, Clock, Calculator, games), run any program as a restart-on-crash service, install software with `apk`, use pendrives, set up a Minecraft server, and put the screen to sleep. Tested in virtual machines only; the installer erases the disk you choose, so do not use it on a real computer yet.
+> **Status:** early alpha. You can install Exec85 onto a disk (BIOS or UEFI), log in, and use the keyboard-driven shell with its apps (Explorer, Notepad, Terminal, Paint, System monitor, Disk usage, Network status, Clock, Calculator, games), run any program as a restart-on-crash service, install software with `apk`, use pendrives, set up a Minecraft server (Vanilla, Paper or Fabric) or a Discord bot (Python or Node.js), and put the screen to sleep. Tested in virtual machines only; the installer erases the disk you choose, so do not use it on a real computer yet.
 
 ## What it is
 
