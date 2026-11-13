@@ -13,7 +13,7 @@ pub const COMMANDS: [(&str, &str); 8] = [
     ("get", "download a file from the web"),
     ("svc", "services: svc list | add | start | stop | log"),
     ("pkg", "software: pkg search | add | del | update"),
-    ("mc", "Minecraft server: mc versions | mc create NAME VERSION 2|4|8 --eula"),
+    ("mc", "Minecraft server: mc versions | mc create NAME VERSION 2|4|8 --eula --type paper"),
 ];
 
 const BOLD: &str = "\x1b[1m";
