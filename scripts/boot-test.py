@@ -770,8 +770,11 @@ def scenario_testing():
         terminal_run(vm, "health | grep -c '^disk '; echo G$((9-3))", "re:\\d+\\s*G6", 60, "health: the report runs (a virtual machine has no SMART: it says so)")
 
         # Home folders and the Desktop shortcuts
-        terminal_run(vm, "ls -d ~/Desktop ~/Documents ~/Downloads ~/Music ~/Pictures ~/Videos | wc -l; echo H$((5-3))", "re:6\\s*H2", 30, "home: the six standard folders exist")
-        terminal_run(vm, "ls ~/Desktop | wc -l; echo H$((6-3))", "re:[1-9]\\d*\\s*H3", 30, "home: the Desktop holds shortcuts")
+        try: terminal_run(vm, "ls -d /home/tester/Desktop /home/tester/Documents /home/tester/Downloads /home/tester/Music /home/tester/Pictures /home/tester/Videos | wc -l; echo H$((5-3))", "re:6\\s*H2", 30, "home: the six standard folders exist")
+        except AssertionError:
+            terminal_run(vm, "echo $HOME; ls -a /home/tester | tr '\\n' ' '; echo H$((5-3))", "re:H2", 20, "diagnostic"); print("DIAG-home>", app_line(vm, "terminal", 1), flush=True)
+            raise
+        terminal_run(vm, "ls /home/tester/Desktop | wc -l; echo H$((6-3))", "re:[1-9]\\d*\\s*H3", 30, "home: the Desktop holds shortcuts")
 
         # Quick installers from the app catalog: each is installed for real and must answer
         terminal_run(vm, "svc stop nginx; svc remove nginx; app install website > /tmp/web.txt 2>&1; echo W$((5-3))", "W2", 600, "catalog: the website installer finishes")
