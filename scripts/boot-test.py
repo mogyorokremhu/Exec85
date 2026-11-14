@@ -769,6 +769,12 @@ def scenario_testing():
         terminal_run(vm, "app install transmission password=longenough1 > /tmp/tr.txt 2>&1; echo T$((5-3))", "T2", 900, "catalog: the Transmission installer finishes")
         dump_file(vm, "/tmp/tr.txt", 3)
         terminal_run(vm, "sleep 15; wget -S -O /dev/null http://127.0.0.1:9091/transmission/rpc 2>&1 | grep -c HTTP/; echo U$((5-3))", "re:[1-9]\\d*U2", 120, "catalog: Transmission's web page answers")
+        terminal_run(vm, "app install samba password=longenough1 > /tmp/sm.txt 2>&1; echo S$((5-3))", "S2", 900, "catalog: the file sharing installer finishes")
+        dump_file(vm, "/tmp/sm.txt", 3)
+        terminal_run(vm, "sleep 5; cat /proc/net/tcp /proc/net/tcp6 | grep -ci ':01BD '; echo S$((6-3))", "re:[1-9]\\d*\\s*S3", 60, "catalog: Samba listens on the file sharing port (445)")
+        terminal_run(vm, "app install localname > /tmp/ln.txt 2>&1; echo N$((5-3))", "N2", 900, "catalog: the local name installer finishes")
+        dump_file(vm, "/tmp/ln.txt", 3)
+        terminal_run(vm, "sleep 5; cat /proc/net/udp /proc/net/udp6 | grep -ci ':14E9 '; echo N$((6-3))", "re:[1-9]\\d*\\s*N3", 60, "catalog: the name service listens on the mDNS port (5353)")
         terminal_run(vm, "app remove website; app list | grep website; echo R$((5-3))", "re:website +no.*R2|no.*R2", 60, "catalog: the website can be removed")
     finally:
         vm.stop()

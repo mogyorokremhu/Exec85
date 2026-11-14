@@ -11,10 +11,10 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Entry { Recipe(usize), App(Kind, &'static str, &'static str) }
 
-const ENTRIES: [Entry; 5] = [
+const ENTRIES: [Entry; 7] = [
     Entry::App(Kind::Minecraft, "Minecraft server", "Vanilla, Paper or Fabric, with the version and memory you choose"),
     Entry::App(Kind::DiscordBot, "Discord bot", "Python or Node.js, with a starter bot or your own"),
-    Entry::Recipe(0), Entry::Recipe(1), Entry::Recipe(2),
+    Entry::Recipe(0), Entry::Recipe(1), Entry::Recipe(2), Entry::Recipe(3), Entry::Recipe(4),
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn it_lists_everything_with_what_is_installed() {
         let (mut m, _c) = app(); settle(&mut m);
-        assert!(m.state().contains("entries=5") && m.state().contains("installed=website"), "{}", m.state());
+        assert!(m.state().contains("entries=7") && m.state().contains("installed=website"), "{}", m.state());
     }
 
     #[test]
