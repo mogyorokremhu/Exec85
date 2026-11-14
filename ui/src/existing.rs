@@ -2,7 +2,7 @@
 //!
 //! When the install disc (or the virtual CD) is still in the drive, the computer starts the installer again and again.
 //! So the installer first looks for an Exec85 on the disks: if there is one, it offers to start it, and does so by itself
-//! after a few seconds. "Starting" means loading the installed system's own kernel and jumping straight into it (`kexec`),
+//! after a few seconds. "Starting" means switching from the disc's system to the installed one without a reboot (see `start`),
 //! so the boot order of the computer does not matter. Reinstalling (which erases the disk) is a deliberate second choice.
 use crate::disks::{self, Disk};
 use crate::gfx::{Canvas, Metrics, Mode, Theme};
@@ -18,7 +18,7 @@ pub const COUNTDOWN_SECS: u32 = 10;
 pub const ROOT_LABEL: &str = "exec85";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Found { pub disk: String, pub bytes: u64, pub root_uuid: String, pub esp_dev: String }
+pub struct Found { pub disk: String, pub bytes: u64, pub root_uuid: String, pub root_dev: String }
 
 /// Label and UUID from an ext4 super block (the 1024 bytes that start 1024 bytes into the partition).
 pub fn ext4_label_and_uuid(sb: &[u8]) -> Option<(String, String)> {
@@ -43,39 +43,29 @@ pub fn find(disks_list: &[Disk], dev_dir: &Path) -> Option<Found> {
     for d in disks_list {
         let root = dev_dir.join(disks::part_name(&d.name, 3));
         if let Some((label, uuid)) = read_super(&root).and_then(|sb| ext4_label_and_uuid(&sb)) {
-            if label == ROOT_LABEL { return Some(Found { disk: d.name.clone(), bytes: d.bytes, root_uuid: uuid, esp_dev: dev_dir.join(disks::part_name(&d.name, 2)).to_string_lossy().into_owned() }); }
+            if label == ROOT_LABEL { return Some(Found { disk: d.name.clone(), bytes: d.bytes, root_uuid: uuid, root_dev: root.to_string_lossy().into_owned() }); }
         }
     }
     None
 }
 
-/// Load the installed kernel and jump into it. Only returns (with a message) when something went wrong.
+/// Hand the computer over to the installed system, without rebooting (so the computer's boot order does not matter).
+/// The disc's init process (BusyBox `init`) is told to "restart" (signal QUIT): it stops the live system, then runs
+/// `/etc/exec85/handoff.sh` in its own place, which mounts the installed disk and switches to its init (`switch_root`).
+/// This only returns, with a message, when the hand-over did not happen.
 pub fn start(f: &Found) -> Result<(), String> {
-    let mnt = "/run/exec85-esp";
-    let _ = std::fs::create_dir_all(mnt);
-    let out = |c: &mut Command| c.output().map_err(|e| e.to_string());
-    let m = out(Command::new("mount").args(["-t", "vfat", "-o", "ro", &f.esp_dev, mnt]))?;
-    if !m.status.success() { return Err(format!("Could not read the boot partition: {}", String::from_utf8_lossy(&m.stderr).trim())); }
-    let (kernel, initrd) = (format!("{mnt}/vmlinuz"), format!("{mnt}/initramfs"));
-    let cmd = crate::install::boot_cmdline(&f.root_uuid);
-    // -s lets the kernel hand over the screen details itself (so the screen keeps working); fall back to the older way.
-    let mut loaded = false;
-    let mut why = String::new();
-    let policy = std::fs::read_to_string("/proc/sys/kernel/kexec_load_disabled").unwrap_or_else(|_| "?".into());
-    for extra in [Some("-s"), None] {
-        let mut c = Command::new("kexec");
-        if let Some(e) = extra { c.arg(e); }
-        let r = c.args(["-l", &kernel, &format!("--initrd={initrd}"), &format!("--command-line={cmd}")]).output().map_err(|e| format!("kexec is not available: {e}"))?;
-        if r.status.success() { loaded = true; break; }
-        let one = format!("{}{}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr)).split_whitespace().collect::<Vec<_>>().join(" ");
-        why.push_str(&format!("[{}: {}] ", extra.unwrap_or("plain"), one.chars().take(70).collect::<String>()));
-    }
-    let _ = Command::new("umount").arg(mnt).status();
-    if !loaded { return Err(format!("The installed system could not be loaded (kexec_load_disabled={}; {}).", policy.trim(), why.chars().take(230).collect::<String>())); }
+    if !f.root_dev.starts_with("/dev/") || f.root_dev.contains("..") || f.root_dev.chars().any(|c| c.is_whitespace()) { return Err("That is not a disk I can start from.".into()); }
+    if !Path::new(HANDOFF_SCRIPT).exists() { return Err("This disc cannot hand over to the installed system (the hand-over script is missing).".into()); }
+    // The note for the script goes into the memory disk's top folder: it is not unmounted while the live system stops.
+    std::fs::write("/handoff-root", format!("{}\n", f.root_dev)).map_err(|e| format!("Could not prepare the hand-over: {e}"))?;
     let _ = Command::new("sync").status();
-    let r = Command::new("kexec").arg("-e").output().map_err(|e| e.to_string())?;
-    Err(format!("Could not jump into the installed system: {}", String::from_utf8_lossy(&r.stderr).trim()))
+    if let Err(e) = crate::sys::send_signal(1, 3) { return Err(format!("Could not ask the system to hand over: {e}")); }
+    // If it works this process is stopped within a few seconds. If not, say so instead of waiting forever.
+    std::thread::sleep(std::time::Duration::from_secs(40));
+    Err("The hand-over to the installed system did not happen. Restart the computer with the disc removed.".into())
 }
+
+pub const HANDOFF_SCRIPT: &str = "/etc/exec85/handoff.sh";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome { Start, Reinstall }
@@ -146,7 +136,7 @@ mod tests {
         for i in 0..16 { v[104 + i] = (0x10 + i) as u8; }
         v
     }
-    fn found() -> Found { Found { disk: "sda".into(), bytes: 20_000_000_000, root_uuid: "u".into(), esp_dev: "/dev/sda2".into() } }
+    fn found() -> Found { Found { disk: "sda".into(), bytes: 20_000_000_000, root_uuid: "u".into(), root_dev: "/dev/sda3".into() } }
 
     #[test]
     fn an_ext4_label_and_uuid_are_read_from_the_super_block() {
@@ -166,7 +156,7 @@ mod tests {
         mk("sda3", "somethingelse"); mk("sdb3", "exec85");
         let f = find(&[disk("sda"), disk("sdb")], &dir).unwrap();
         assert_eq!((f.disk.as_str(), f.root_uuid.as_str()), ("sdb", "10111213-1415-1617-1819-1a1b1c1d1e1f"));
-        assert!(f.esp_dev.ends_with("sdb2"));
+        assert!(f.root_dev.ends_with("sdb3"));
         assert!(find(&[disk("sda")], &dir).is_none());
         assert!(find(&[disk("nvme0n1")], &dir).is_none(), "no partition at all");
         let _ = std::fs::remove_dir_all(&dir);
@@ -198,7 +188,7 @@ mod tests {
     fn it_draws_at_several_sizes_and_states() {
         let mut e = Existing::new(100, 40, Mode::Dark, found());
         for stage in 0..2 {
-            if stage == 1 { e.handle(parse_key("x").unwrap()); e.msg = Some("The installed system could not be loaded (kexec failed).".into()); }
+            if stage == 1 { e.handle(parse_key("x").unwrap()); e.msg = Some("The installed system could not be loaded (for testing).".into()); }
             for (cols, rows) in [(8usize, 4usize), (40, 12), (100, 40)] {
                 e.cols = cols; e.rows = rows;
                 let mut c = Canvas::new(1280, 800);

@@ -30,6 +30,8 @@ pub fn console_line(line: &str) {
 }
 
 pub fn cmdline_has(word: &str) -> bool {
+    // After a hand-over from the install disc the kernel command line still says "live", but this is the installed system.
+    if word == "exec85.live" && Path::new("/etc/exec85/handed-over").exists() { return false; }
     std::fs::read_to_string("/proc/cmdline").map_or(false, |s| s.split_whitespace().any(|w| w == word))
 }
 

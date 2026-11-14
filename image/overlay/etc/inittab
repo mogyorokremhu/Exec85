@@ -4,5 +4,7 @@
 ::wait:/sbin/openrc default
 tty1::respawn:/usr/bin/exec85
 ::ctrlaltdel:/sbin/reboot
+# Signal QUIT (sent by the installer disc to start an installed system): replace init by the hand-over script.
+::restart:/etc/exec85/handoff.sh
 ::shutdown:/sbin/openrc shutdown
 ::shutdown:/bin/umount -a -r
