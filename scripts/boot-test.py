@@ -491,7 +491,10 @@ def app_press(vm, key, name, **expect):
     return d
 
 def open_app(vm, index):
-    press(vm, "alt-a", menu="apps")
+    try: press(vm, "alt-a", menu="apps")
+    except AssertionError:          # now and then the first key press is lost while the screen is busy: once more
+        vm.monitor("sendkey esc"); time.sleep(1.5)
+        press(vm, "alt-a", menu="apps")
     for _ in range(index): press(vm, "down")
     press(vm, "ret", menu="none")
     d = app_line(vm, APPS[index])
