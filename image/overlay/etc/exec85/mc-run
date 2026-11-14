@@ -1,0 +1,6 @@
+#!/bin/sh
+# Starts a Minecraft server with a console: whatever is written to the file "console.in" in the server's folder is typed into the server.
+# (Opening the pipe for reading AND writing here keeps it open, so the server never sees "end of input" when a writer goes away.)
+[ -p console.in ] || mkfifo -m 660 console.in
+exec 3<>console.in
+exec "$@" <&3

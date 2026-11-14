@@ -8,7 +8,7 @@ use crate::paint::Painter;
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Step { Servers, Type, Versions, Ram, Options, Working, Done }
+enum Step { Servers, Log, Type, Versions, Ram, Options, Working, Done }
 
 pub struct Minecraft {
     be: Backend,
@@ -42,6 +42,16 @@ pub struct Minecraft {
     listed: bool,
     /// Where the new server's folder is made.
     base: String,
+    /// The log and console screen: the newest lines of the server's log, the line being typed, and a command waiting to be sent.
+    log_for: String,
+    log_lines: Vec<String>,
+    log_scroll: usize,
+    log_follow: bool,
+    log_asked: Option<std::time::Instant>,
+    input: String,
+    pending: Option<String>,
+    offer_console: bool,
+    rows: usize,
 }
 
 pub fn parse_versions(text: &str) -> (String, Vec<String>) {
@@ -53,7 +63,7 @@ impl Minecraft {
     pub fn new(be: Backend, mem_kb: u64) -> Minecraft {
         let avail_kb = crate::mc::mem_available_kb();
         let ram = ram_choices(mem_kb).first().copied().unwrap_or(2);   // the smallest choice: the safe default
-        Minecraft { servers: vec![], srv_sel: 0, srv_detail: String::new(), srv_asked: None, listed: false, base: crate::mc::DEFAULT_BASE.into(), created: String::new(), status: String::new(), status_asked: None, avail_kb, be, job: Job::new(), step: Step::Type, kind: ServerType::Vanilla, type_sel: 0, latest: String::new(), versions: vec![], sel: 0, mem_kb, ram, name: "minecraft".into(), eula: false, focus: 0, msg: String::new(), first: true, addr: None }
+        Minecraft { log_for: String::new(), log_lines: vec![], log_scroll: 0, log_follow: true, log_asked: None, input: String::new(), pending: None, offer_console: false, rows: 20, servers: vec![], srv_sel: 0, srv_detail: String::new(), srv_asked: None, listed: false, base: crate::mc::DEFAULT_BASE.into(), created: String::new(), status: String::new(), status_asked: None, avail_kb, be, job: Job::new(), step: Step::Type, kind: ServerType::Vanilla, type_sel: 0, latest: String::new(), versions: vec![], sel: 0, mem_kb, ram, name: "minecraft".into(), eula: false, focus: 0, msg: String::new(), first: true, addr: None }
     }
 
     pub fn system_memory_kb() -> u64 {
@@ -81,6 +91,12 @@ impl Minecraft {
             ("detail", Err(_)) => {}
             ("act", Ok(m)) => { self.msg = if m.is_empty() { "Done.".into() } else { m }; self.job.start(env, &self.be, "list", vec!["mc-list".into()]); }
             ("act", Err(e)) => self.msg = e,
+            ("log", Ok(t)) => { self.log_lines = t.lines().map(String::from).collect(); }
+            ("log", Err(e)) => self.msg = e,
+            ("cmd", Ok(_)) => { self.msg = "Sent. The answer appears in the log.".into(); self.log_asked = None; }
+            ("cmd", Err(e)) => { self.offer_console = e.contains("before the console existed"); self.msg = e; }
+            ("enable", Ok(m)) => { self.msg = m; self.offer_console = false; }
+            ("enable", Err(e)) => self.msg = e,
             ("create", Err(e)) => { self.step = Step::Options; self.msg = e; }
             ("accept", Ok(m)) => { self.eula = true; self.msg = m; }
             ("accept", Err(e)) => self.msg = e,
@@ -108,10 +124,16 @@ impl Minecraft {
 impl Application for Minecraft {
     fn kind(&self) -> Kind { Kind::Minecraft }
     fn title(&self) -> String { "Minecraft server".into() }
-    fn interval(&self) -> Option<Duration> { Some(if self.job.busy { Duration::from_millis(400) } else if self.step == Step::Done || self.step == Step::Servers { Duration::from_secs(3) } else { Duration::from_secs(60) }) }
+    fn interval(&self) -> Option<Duration> { Some(if self.job.busy { Duration::from_millis(400) } else if self.step == Step::Log { Duration::from_secs(1) } else if self.step == Step::Done || self.step == Step::Servers { Duration::from_secs(3) } else { Duration::from_secs(60) }) }
+    fn resize(&mut self, _cols: usize, rows: usize) { self.rows = rows.saturating_sub(6).max(1); }
     fn tick(&mut self, env: &Env) {
         self.finish(env);
         if self.first { self.first = false; self.job.start(env, &self.be, "list", vec!["mc-list".into()]); }
+        // On the log screen: send a waiting command, then read the newest lines again every couple of seconds
+        if self.step == Step::Log && !self.job.busy {
+            if let Some(c) = self.pending.take() { self.job.start(env, &self.be, "cmd", vec!["mc-cmd".into(), self.log_for.clone(), c]); }
+            else if self.log_asked.map_or(true, |t| t.elapsed() >= Duration::from_secs(2)) { self.log_asked = Some(std::time::Instant::now()); self.job.start(env, &self.be, "log", vec!["svc-log".into(), self.log_for.clone(), "300".into()]); }
+        }
         // On the servers screen: look again every few seconds (a server that was starting is running a moment later)
         if self.step == Step::Servers && !self.job.busy && self.srv_asked.map_or(true, |t| t.elapsed() >= Duration::from_secs(3)) { self.srv_asked = Some(std::time::Instant::now()); self.job.start(env, &self.be, "list", vec!["mc-list".into()]); }
         // On the done screen: what does the server's own log say it is doing?
@@ -130,7 +152,21 @@ impl Application for Minecraft {
                     code::UP => { self.srv_sel = self.srv_sel.saturating_sub(1); self.msg.clear(); self.ask_detail(env); }
                     code::DOWN => { self.srv_sel = (self.srv_sel + 1).min(n); self.msg.clear(); self.ask_detail(env); }
                     code::ENTER => if self.srv_sel >= n { self.step = Step::Type; self.msg.clear(); } else { self.msg = "Press S to start, T to stop or R to restart this server.".into(); },
-                    _ => if self.srv_sel < n { match k.ch().map(|c| c.to_ascii_lowercase()) { Some('s') => self.act(env, "start"), Some('t') => self.act(env, "stop"), Some('r') => self.act(env, "restart"), Some('e') => self.act(env, "accept"), _ => {} } },
+                    _ => if self.srv_sel < n { match k.ch().map(|c| c.to_ascii_lowercase()) { Some('s') => self.act(env, "start"), Some('t') => self.act(env, "stop"), Some('r') => self.act(env, "restart"), Some('e') => self.act(env, "accept"), Some('l') | Some('c') => { self.log_for = self.servers[self.srv_sel].0.clone(); self.log_lines.clear(); self.log_follow = true; self.input.clear(); self.offer_console = false; self.log_asked = None; self.msg.clear(); self.step = Step::Log; } _ => {} } },
+                }
+            }
+            Step::Log => {
+                let page = self.rows.saturating_sub(1).max(1);
+                let max = self.log_lines.len().saturating_sub(self.rows.max(1));
+                match k.code {
+                    code::ESC => { self.step = Step::Servers; self.msg.clear(); self.srv_asked = None; }
+                    code::ENTER => { let c = self.input.trim().to_string(); if !c.is_empty() { self.pending = Some(c); self.input.clear(); } }
+                    code::PGUP => { if self.log_follow { self.log_scroll = max; self.log_follow = false; } self.log_scroll = self.log_scroll.saturating_sub(page); }
+                    code::PGDN => { self.log_scroll = (self.log_scroll + page).min(max); if self.log_scroll >= max { self.log_follow = true; } }
+                    code::HOME => { self.log_follow = false; self.log_scroll = 0; }
+                    code::END => { self.log_follow = true; }
+                    code::F5 => if self.offer_console { self.job.start(env, &self.be, "enable", vec!["mc-console".into(), self.log_for.clone()]); self.msg = "Adding the console ...".into(); },
+                    _ => { edit_text(&mut self.input, &k, 200); }
                 }
             }
             Step::Type => match k.code {
@@ -205,7 +241,7 @@ impl Application for Minecraft {
         let foot = a.y + a.h.saturating_sub(1);
         p.text(a.x, a.y, "Minecraft server", t.accent, None);
         let steps = ["1 Type", "2 Version", "3 Memory", "4 Install"];
-        let cur = match self.step { Step::Servers => 9, Step::Type => 0, Step::Versions => 1, Step::Ram => 2, _ => 3 };
+        let cur = match self.step { Step::Servers | Step::Log => 9, Step::Type => 0, Step::Versions => 1, Step::Ram => 2, _ => 3 };
         let mut x = a.x + 18;
         for (i, s) in steps.iter().enumerate() { if x + s.len() < a.x + a.w { p.text(x, a.y, s, if i == cur { t.accent } else { t.dim }, None); } x += s.len() + 2; }
         let body = Rect { x: a.x, y: a.y + 2, w: a.w, h: a.h.saturating_sub(4) };
@@ -270,6 +306,17 @@ impl Application for Minecraft {
                 p.clip(a.x, a.y + 11, 14, "  Install  ", if ed && self.focus == 3 { t.accent_text } else { t.text }, if ed && self.focus == 3 { t.accent } else { t.panel });
                 if ed && !self.eula { p.paragraph(a.x, a.y + 13, a.w, "Without the tick the server is installed but will not start.", t.dim, t.panel); }
             }
+            Step::Log => {
+                let rows = a.h.saturating_sub(6).max(1);
+                let max = self.log_lines.len().saturating_sub(rows);
+                let top = if self.log_follow { max } else { self.log_scroll.min(max) };
+                p.text(a.x, a.y + 2, &format!("Log of {}{}", self.log_for, if self.log_follow { "   (following the newest lines)" } else { "   (scrolled back: End follows again)" }), t.dim, None);
+                for i in 0..rows { let Some(l) = self.log_lines.get(top + i) else { break }; p.clip(a.x, a.y + 3 + i, a.w, l, t.text, t.panel); }
+                let y = a.y + a.h.saturating_sub(3);
+                p.text(a.x, y, "Command:", t.accent, None);
+                p.field(a.x + 9, y, a.w.saturating_sub(9).max(1), &self.input, focused, false);
+                if self.offer_console { p.clip(a.x, y + 1, a.w, "Press F5 to add the console to this server (then restart it).", t.accent, t.panel); }
+            }
             Step::Servers => {
                 p.text(a.x, a.y + 2, "Your Minecraft servers", t.dim, None);
                 let mut items: Vec<String> = self.servers.iter().map(|(n, st, dir)| format!("{:<14} {:<8} {}", n, st, dir)).collect();
@@ -282,15 +329,15 @@ impl Application for Minecraft {
                 }
             }
         }
-        let hint = match self.step { Step::Servers => "Up/Down Choose   S Start   T Stop   R Restart   E Accept EULA   Enter New", Step::Type => "Up/Down Choose   Enter Next", Step::Versions => "Up/Down Choose   Enter Next   Esc Back", Step::Ram => "Left/Right or 2 4 8   Enter Next   Esc Back", Step::Options => "Tab Next box   Space Tick   Enter Next / Install   Esc Back", Step::Working => "Please wait...", Step::Done => if self.eula { "Enter Back to the start" } else { "E Accept the EULA and start   Enter Back to the start" } };
+        let hint = match self.step { Step::Servers => "S Start  T Stop  R Restart  L Log and console  E Accept EULA  Enter New", Step::Log => "Type a Minecraft command, Enter sends   PgUp/PgDn Scroll   End Newest   Esc Back", Step::Type => "Up/Down Choose   Enter Next", Step::Versions => "Up/Down Choose   Enter Next   Esc Back", Step::Ram => "Left/Right or 2 4 8   Enter Next   Esc Back", Step::Options => "Tab Next box   Space Tick   Enter Next / Install   Esc Back", Step::Working => "Please wait...", Step::Done => if self.eula { "Enter Back to the start" } else { "E Accept the EULA and start   Enter Back to the start" } };
         p.clip(a.x, foot, a.w, hint, t.dim, t.panel);
         if self.step != Step::Done && !self.msg.is_empty() { super::draw_note(p, a.x, foot.saturating_sub(1), a.w, &self.msg, t.accent, t.panel, 3); }
     }
 
     fn state(&self) -> String {
         let n = |s: &str| if s.is_empty() { "-".to_string() } else { s.replace(' ', "_") };
-        let step = match self.step { Step::Servers => "servers", Step::Type => "type", Step::Versions => "versions", Step::Ram => "ram", Step::Options => "options", Step::Working => "working", Step::Done => "done" };
-        format!("name=minecraft servers={} sel_srv={} base={} status={} step={step} kind={} addr={} versions={} latest={} sel={} ram={} eula={} focus={} busy={} msg={}", self.servers.len(), self.srv_sel, n(&self.base), n(self.status.split(' ').next().unwrap_or("")), self.kind.id(), n(self.addr.as_deref().unwrap_or("")), self.versions.len(), n(&self.latest), n(self.version()), self.ram, self.eula, self.focus, self.job.busy, n(&self.msg.chars().take(60).collect::<String>()))
+        let step = match self.step { Step::Servers => "servers", Step::Log => "log", Step::Type => "type", Step::Versions => "versions", Step::Ram => "ram", Step::Options => "options", Step::Working => "working", Step::Done => "done" };
+        format!("name=minecraft log_lines={} servers={} sel_srv={} base={} status={} step={step} kind={} addr={} versions={} latest={} sel={} ram={} eula={} focus={} busy={} msg={}", self.log_lines.len(), self.servers.len(), self.srv_sel, n(&self.base), n(self.status.split(' ').next().unwrap_or("")), self.kind.id(), n(self.addr.as_deref().unwrap_or("")), self.versions.len(), n(&self.latest), n(self.version()), self.ram, self.eula, self.focus, self.job.busy, n(&self.msg.chars().take(60).collect::<String>()))
     }
     fn hint(&self) -> &'static str { "Up/Down Choose   Enter Next   F4 Close" }
 }
@@ -431,6 +478,10 @@ mod tests {
                 "mc-status" => Ok("running Running: players can connect.".into()),
                 "mc-versions" => Ok("latest 1.21.5\nrelease 1.21.5\n".into()),
                 "mc-accept" => Ok("The EULA is accepted and beta is starting.".into()),
+                "svc-log" => Ok(format!("{}[Server thread/INFO]: Done (3.2s)! For help, type \"help\"", (1..=40).map(|i| format!("[main/INFO]: line {i} of {}\n", r[1])).collect::<String>())),
+                "mc-cmd" if r[1] == "beta" => Err(crate::mc::NO_CONSOLE.into()),
+                "mc-cmd" => Ok("Sent.".into()),
+                "mc-console" => Ok("The console is added. Restart beta to use it.".into()),
                 _ => Ok(String::new()),
             }
         });
@@ -459,6 +510,49 @@ mod tests {
         key(&mut m, "s"); key(&mut m, "t"); assert_eq!(calls.lock().unwrap().len(), before + 0, "the last row is not a server: {:?}", calls.lock().unwrap());
         key(&mut m, "enter"); assert!(m.state().contains("step=type"), "{}", m.state());
         key(&mut m, "esc"); assert!(m.state().contains("step=servers"), "Esc goes back to the list");
+    }
+
+    #[test]
+    fn the_log_and_console_screen_shows_the_log_and_sends_typed_commands() {
+        let (mut m, calls) = app_with_servers(); settle(&mut m); m.resize(80, 16);
+        key(&mut m, "l");
+        assert!(m.state().contains("step=log"), "{}", m.state());
+        std::thread::sleep(Duration::from_millis(10)); settle(&mut m);
+        assert!(calls.lock().unwrap().contains(&"svc-log alpha 300".to_string()), "{:?}", calls.lock().unwrap());
+        assert!(m.state().contains("log_lines=41"), "{}", m.state());
+        text(&mut m, "say hi there"); key(&mut m, "enter");
+        std::thread::sleep(Duration::from_millis(10)); settle(&mut m);
+        assert!(calls.lock().unwrap().contains(&"mc-cmd alpha say hi there".to_string()), "the whole line is sent as typed: {:?}", calls.lock().unwrap());
+        assert!(m.input.is_empty() && m.msg.contains("Sent"), "{} / {}", m.input, m.msg);
+        key(&mut m, "enter"); assert!(!calls.lock().unwrap().iter().any(|c| c == "mc-cmd alpha "), "an empty line sends nothing");
+        key(&mut m, "pgup"); assert!(!m.log_follow); key(&mut m, "end"); assert!(m.log_follow);
+        key(&mut m, "esc"); assert!(m.state().contains("step=servers"));
+    }
+
+    #[test]
+    fn an_old_server_without_a_console_offers_to_get_one() {
+        let (mut m, calls) = app_with_servers(); settle(&mut m); m.resize(80, 16);
+        key(&mut m, "down"); key(&mut m, "c");                      // beta
+        text(&mut m, "stop"); key(&mut m, "enter");
+        std::thread::sleep(Duration::from_millis(10)); settle(&mut m);
+        assert!(m.offer_console && m.msg.contains("before the console existed"), "{}", m.msg);
+        key(&mut m, "f5");
+        assert!(calls.lock().unwrap().contains(&"mc-console beta".to_string()), "{:?}", calls.lock().unwrap());
+        assert!(!m.offer_console, "{}", m.msg);
+    }
+
+    #[test]
+    fn every_servers_screen_draws_at_several_sizes() {
+        use crate::gfx::{Canvas, Metrics, Mode, Theme};
+        let (mut m, _c) = app_with_servers(); settle(&mut m);
+        for step in 0..3 {
+            if step == 1 { key(&mut m, "l"); std::thread::sleep(Duration::from_millis(10)); settle(&mut m); } else if step == 2 { key(&mut m, "esc"); key(&mut m, "down"); key(&mut m, "down"); key(&mut m, "enter"); }
+            for (w, h) in [(8usize, 4usize), (40, 12), (100, 36)] {
+                let mut c = Canvas::new(1280, 800);
+                let mut p = Painter { c: &mut c, m: Metrics::for_height(800), t: Theme::new(Mode::Dark) };
+                m.draw(&mut p, Rect { x: 1, y: 1, w, h }, true);
+            }
+        }
     }
 
     #[test]

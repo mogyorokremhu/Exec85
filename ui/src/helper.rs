@@ -250,6 +250,8 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
         "mc-status" => crate::mc::server_status(ctx, arg(1)?),
         "mc-list" => Ok(crate::mc::list(ctx)),
+        "mc-cmd" => crate::mc::send_command(ctx, arg(1)?, &w[2..].join(" ")),
+        "mc-console" => crate::mc::enable_console(ctx, arg(1)?),
         "log-list" => {
             let mut v = vec!["kernel".to_string()];
             if ctx.root.join("var/log/messages").exists() { v.push("messages".into()); }
@@ -566,6 +568,9 @@ pub fn cli(args: &[String]) -> i32 {
         ["--mc", "accept", name] => show(call(&["mc-accept", name])),
         ["--mc", "status", name] => show(call(&["mc-status", name])),
         ["--mc", "list"] => show(call(&["mc-list"])),
+        ["--mc", "log", name] => show(call(&["svc-log", name, "200"])),
+        ["--mc", "console", name] => show(call(&["mc-console", name])),
+        ["--mc", "cmd", name, words @ ..] if !words.is_empty() => { let mut v = vec!["mc-cmd", name]; v.extend(words.iter().copied()); show(call(&v)) }
         ["--mc", a @ ("start" | "stop" | "restart"), name] => show(call(&[&format!("svc-{a}"), name])),
         ["--net", "set", name, mode, rest @ ..] => { let mut v = vec!["net-set", name, mode]; v.extend(rest.iter().copied()); show(call(&v)) }
         ["--net", "wifi", "scan", iface] => show(call(&["wifi-scan", iface])),

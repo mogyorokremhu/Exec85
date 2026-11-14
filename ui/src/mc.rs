@@ -216,7 +216,46 @@ pub fn eula_text(accepted: bool) -> String {
     format!("#By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).\neula={}\n", accepted)
 }
 
-pub fn server_command(java: &str, ram_gb: u32) -> String { format!("{java} -Xmx{ram_gb}G -Xms1G -jar server.jar nogui") }
+/// The program that starts a server with a console (see `image/overlay/etc/exec85/mc-run`).
+pub const RUN_SCRIPT: &str = "/etc/exec85/mc-run";
+
+pub fn server_command(java: &str, ram_gb: u32) -> String { format!("{RUN_SCRIPT} {java} -Xmx{ram_gb}G -Xms1G -jar server.jar nogui") }
+
+pub const NO_CONSOLE: &str = "This server was installed before the console existed. Add the console (F5), then restart the server.";
+
+fn minecraft_service(ctx: &Ctx, name: &str) -> Result<ServiceDef, String> {
+    services::valid_name(name).map_err(String::from)?;
+    let d = std::fs::read_to_string(ctx.root.join("etc/exec85/services").join(format!("{name}.conf"))).ok().and_then(|t| services::parse_conf(&t)).ok_or_else(|| format!("There is no Minecraft server called {name}."))?;
+    if !d.command.contains("server.jar") { return Err(format!("{name} is not a Minecraft server.")); }
+    Ok(d)
+}
+
+/// Type one line into a running server's console. Anything the server understands works (`say hi`, `op name`, `whitelist add name`, `stop` ...).
+pub fn send_command(ctx: &Ctx, name: &str, text: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+    let d = minecraft_service(ctx, name)?;
+    let text = text.trim();
+    if text.is_empty() { return Err("Type a command first.".into()); }
+    if text.len() > 250 || text.chars().any(|c| c.is_control() || !c.is_ascii()) { return Err("A command is one line of plain letters, digits and symbols (at most 250 characters).".into()); }
+    if !d.command.starts_with(RUN_SCRIPT) { return Err(NO_CONSOLE.into()); }
+    let pipe = ctx.root.join(d.dir.trim_start_matches('/')).join("console.in");
+    let not_running = || "The server is not running, so it cannot take commands. Start it first.".to_string();
+    if !std::fs::metadata(&pipe).map_or(false, |m| m.file_type().is_fifo()) { return Err(not_running()); }
+    // Non-blocking: when nothing is reading (the server is not running) this fails at once instead of waiting forever.
+    let mut f = std::fs::OpenOptions::new().write(true).custom_flags(0o4000).open(&pipe).map_err(|_| not_running())?;
+    f.write_all(format!("{text}\n").as_bytes()).map_err(|_| not_running())?;
+    Ok("Sent.".into())
+}
+
+/// Give a server that was installed without a console the console (its service is changed; it takes effect at the next restart).
+pub fn enable_console(ctx: &Ctx, name: &str) -> Result<String, String> {
+    let d = minecraft_service(ctx, name)?;
+    if d.command.starts_with(RUN_SCRIPT) { return Ok("This server already has a console.".into()); }
+    let def = ServiceDef { command: format!("{RUN_SCRIPT} {}", d.command), ..d };
+    crate::helper::handle(ctx, &["svc-save".to_string(), services::render_conf(&def)])?;
+    Ok(format!("The console is added. Restart {name} to use it."))
+}
 
 fn tmp_file(ctx: &Ctx, name: &str) -> std::path::PathBuf { ctx.root.join("run/exec85").join(name) }
 
@@ -398,9 +437,7 @@ pub fn ensure_java(ctx: &Ctx, major: u32) -> Result<String, String> {
 /// "Accept the EULA and start": for a server that was installed without the tick. Only the person at the keyboard can ask for this;
 /// the file is changed and the service is set to start at boot and started.
 pub fn accept_eula(ctx: &Ctx, name: &str) -> Result<String, String> {
-    services::valid_name(name).map_err(String::from)?;
-    let owner = std::fs::read_to_string(ctx.root.join("etc/exec85/services").join(format!("{name}.conf"))).ok().and_then(|t| services::parse_conf(&t)).ok_or_else(|| format!("There is no Minecraft server called {name}."))?;
-    if !owner.command.contains("server.jar") { return Err(format!("{name} is not a Minecraft server.")); }
+    let owner = minecraft_service(ctx, name)?;
     let dir = ctx.root.join(owner.dir.trim_start_matches('/'));
     let eula = dir.join("eula.txt");
     if !eula.exists() { return Err(format!("There is no Minecraft server called {name}.")); }
@@ -536,6 +573,43 @@ mod tests {
     }
 
     #[test]
+    fn commands_are_typed_into_the_servers_console() {
+        use std::io::Read;
+        let r = world("console", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+        create(&ctx, &Create { kind: ServerType::Vanilla, name: "mine", version: "1.21.5", ram_gb: 2, eula: true, user: "tester", base: DEFAULT_BASE }).unwrap();
+        let conf = std::fs::read_to_string(r.join("etc/exec85/services/mine.conf")).unwrap();
+        assert!(conf.contains("command=/etc/exec85/mc-run "), "new servers get the console: {conf}");
+        assert!(send_command(&ctx, "mine", "say hi").unwrap_err().contains("not running"), "no pipe yet: the server has never run");
+        // what mc-run does: make the pipe and keep it open for reading and writing
+        let pipe = r.join("srv/minecraft/mine/console.in");
+        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        let mut reader = std::fs::OpenOptions::new().read(true).write(true).open(&pipe).unwrap();
+        assert_eq!(send_command(&ctx, "mine", "  say hello world  ").unwrap(), "Sent.");
+        assert_eq!(send_command(&ctx, "mine", "op me").unwrap(), "Sent.");
+        let mut buf = [0u8; 64]; let n = reader.read(&mut buf).unwrap();
+        assert_eq!(String::from_utf8_lossy(&buf[..n]), "say hello world\nop me\n", "each command is one line, in order");
+        for bad in ["", "   ", "two\nlines", "tab\there", "caf\u{e9}", &"x".repeat(300)] { assert!(send_command(&ctx, "mine", bad).is_err(), "{bad:?}"); }
+        assert!(send_command(&ctx, "../x", "say hi").is_err() && send_command(&ctx, "nosuch", "say hi").is_err());
+        let other = ServiceDef { name: "ticker".into(), description: "x".into(), command: "sleep 100".into(), dir: "/srv/t".into(), user: "tester".into(), env: vec![], autostart: false, ports: String::new() };
+        crate::helper::handle(&ctx, &["svc-save".to_string(), services::render_conf(&other)]).unwrap();
+        assert!(send_command(&ctx, "ticker", "say hi").unwrap_err().contains("not a Minecraft server"), "other services get no commands");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn an_old_server_can_be_given_the_console() {
+        let r = world("oldsrv", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+        let old = ServiceDef { name: "old".into(), description: "Minecraft".into(), command: "/opt/java-21/bin/java -Xmx2G -jar server.jar nogui".into(), dir: "/srv/minecraft/old".into(), user: "tester".into(), env: vec![], autostart: true, ports: "25565/tcp".into() };
+        crate::helper::handle(&ctx, &["svc-save".to_string(), services::render_conf(&old)]).unwrap();
+        assert!(send_command(&ctx, "old", "say hi").unwrap_err().contains("before the console existed"));
+        assert!(enable_console(&ctx, "old").unwrap().contains("Restart old"));
+        let conf = std::fs::read_to_string(r.join("etc/exec85/services/old.conf")).unwrap();
+        assert!(conf.contains("command=/etc/exec85/mc-run /opt/java-21/bin/java -Xmx2G -jar server.jar nogui"), "{conf}");
+        assert!(enable_console(&ctx, "old").unwrap().contains("already has"), "twice does no harm");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
     fn the_log_tells_what_the_server_is_doing() {
         assert_eq!(log_status("").state, "stopped");
         assert_eq!(log_status("[10:00:01] [main/INFO]: Starting minecraft server version 1.21.5").state, "starting");
@@ -619,7 +693,7 @@ mod tests {
         assert_eq!(ram_choices(6_000_000), vec![2, 4]);
         assert_eq!(ram_choices(16_000_000), vec![2, 4, 8]);
         assert!(eula_text(true).ends_with("eula=true\n") && eula_text(false).ends_with("eula=false\n") && eula_text(true).contains("aka.ms/MinecraftEULA"));
-        assert_eq!(server_command("/usr/lib/jvm/java-21-openjdk/bin/java", 4), "/usr/lib/jvm/java-21-openjdk/bin/java -Xmx4G -Xms1G -jar server.jar nogui");
+        assert_eq!(server_command("/usr/lib/jvm/java-21-openjdk/bin/java", 4), "/etc/exec85/mc-run /usr/lib/jvm/java-21-openjdk/bin/java -Xmx4G -Xms1G -jar server.jar nogui");
         assert!(valid_version_id("1.21.5") && valid_version_id("25w01a") && !valid_version_id("../x") && !valid_version_id("a b") && !valid_version_id(""));
     }
 
