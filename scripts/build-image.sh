@@ -34,6 +34,9 @@ apk add --root "$R" --initdb --no-cache --keys-dir /etc/apk/keys \
 for pkg in mpg123 mpg123-alsa alsa-utils wpa_supplicant iw kexec-tools smartmontools; do
     apk add --root "$R" --no-cache --keys-dir /etc/apk/keys "$pkg" >/dev/null 2>&1 || echo "WARNING: package $pkg is not available; the installer will have no music"
 done
+# Alpine's defaults can forbid loading another kernel; the installer disc needs that (kexec) to start an installed system by itself.
+if ls "$R"/etc/sysctl.d/*.conf >/dev/null 2>&1; then sed -i '/kexec_load_disabled/d' "$R"/etc/sysctl.d/*.conf; fi
+mkdir -p "$R/etc/sysctl.d"; echo "kernel.kexec_load_disabled = 0" > "$R/etc/sysctl.d/99-exec85.conf"
 # Make sure the groups the installer puts the first user into exist (with a free group id).
 for want in wheel:10 audio:18 video:27 input:105 users:100; do
     name=${want%%:*}; gid=${want##*:}

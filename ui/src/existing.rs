@@ -61,15 +61,17 @@ pub fn start(f: &Found) -> Result<(), String> {
     // -s lets the kernel hand over the screen details itself (so the screen keeps working); fall back to the older way.
     let mut loaded = false;
     let mut why = String::new();
+    let policy = std::fs::read_to_string("/proc/sys/kernel/kexec_load_disabled").unwrap_or_else(|_| "?".into());
     for extra in [Some("-s"), None] {
         let mut c = Command::new("kexec");
         if let Some(e) = extra { c.arg(e); }
         let r = c.args(["-l", &kernel, &format!("--initrd={initrd}"), &format!("--command-line={cmd}")]).output().map_err(|e| format!("kexec is not available: {e}"))?;
         if r.status.success() { loaded = true; break; }
-        why = format!("{}{}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr)).split_whitespace().collect::<Vec<_>>().join(" ");
+        let one = format!("{}{}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr)).split_whitespace().collect::<Vec<_>>().join(" ");
+        why.push_str(&format!("[{}: {}] ", extra.unwrap_or("plain"), one.chars().take(70).collect::<String>()));
     }
     let _ = Command::new("umount").arg(mnt).status();
-    if !loaded { return Err(format!("The installed system could not be loaded (kexec: {}).", why.chars().take(160).collect::<String>())); }
+    if !loaded { return Err(format!("The installed system could not be loaded (kexec_load_disabled={}; {}).", policy.trim(), why.chars().take(230).collect::<String>())); }
     let _ = Command::new("sync").status();
     let r = Command::new("kexec").arg("-e").output().map_err(|e| e.to_string())?;
     Err(format!("Could not jump into the installed system: {}", String::from_utf8_lossy(&r.stderr).trim()))
