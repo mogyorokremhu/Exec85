@@ -248,6 +248,29 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "ssh-addkey" => crate::ssh::add_key(ctx, arg(1)?, arg(2)?),
         "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
         "mc-status" => crate::mc::server_status(ctx, arg(1)?),
+        "log-list" => {
+            let mut v = vec!["kernel".to_string()];
+            if ctx.root.join("var/log/messages").exists() { v.push("messages".into()); }
+            if let Ok(rd) = std::fs::read_dir(ctx.root.join("var/log/exec85")) { let mut n: Vec<String> = rd.flatten().filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".log").map(String::from)).filter(|n| services::valid_name(n).is_ok()).collect(); n.sort(); v.extend(n); }
+            Ok(v.join("\n"))
+        }
+        "log-tail" => {
+            let name = arg(1)?;
+            let n: usize = arg(2).ok().and_then(|s| s.parse().ok()).unwrap_or(200).clamp(1, 2000);
+            let cut = |t: String| t.lines().map(|l| l.chars().take(300).collect::<String>()).collect::<Vec<_>>().join("\n");
+            if name == "kernel" { let (_c, out) = ctx.runner.run("dmesg", &[]); let l: Vec<&str> = out.lines().collect(); return Ok(cut(l[l.len().saturating_sub(n)..].join("\n"))); }
+            if name == "messages" { return Ok(cut(tail(&ctx.root.join("var/log/messages"), n))); }
+            services::valid_name(name).map_err(String::from)?;
+            let path = ctx.root.join("var/log/exec85").join(format!("{name}.log"));
+            if !path.exists() { return Err("There is no such log.".into()); }
+            Ok(cut(tail(&path, n)))
+        }
+        "disk-health" => {
+            let d = arg(1)?;
+            if d.is_empty() || d.len() > 20 || !d.chars().all(|c| c.is_ascii_alphanumeric()) || SKIP_DISK_PREFIXES.iter().any(|p| d.starts_with(p)) { return Err("Not a disk name.".into()); }
+            let (_c, out) = ctx.runner.run("smartctl", &["-H", "-A", &format!("/dev/{d}")]);
+            Ok(out.lines().take(120).collect::<Vec<_>>().join("\n"))
+        }
         "site-list" => Ok(crate::web::parse_allow(&std::fs::read_to_string(ctx.root.join("etc/exec85/sites.allow")).unwrap_or_default()).join("\n")),
         "site-add" | "site-remove" => {
             let add = w[0] == "site-add";
@@ -471,6 +494,8 @@ pub fn serve() -> ! {
 }
 
 /// `exec85 --svc ...` and `exec85 --pkg ...`: the same actions as the apps, from a terminal.
+const SKIP_DISK_PREFIXES: [&str; 4] = ["loop", "ram", "sr", "zram"];
+
 pub fn cli(args: &[String]) -> i32 {
     let sub: Vec<&str> = args.iter().map(String::as_str).collect();
     // Output goes through write!, not println!: when the reader stops early (`... | head -1`) that is not an error worth crashing for.
@@ -545,6 +570,9 @@ pub fn cli(args: &[String]) -> i32 {
         ["--fw", on_off @ ("on" | "off")] => show(call(&["fw-enable", on_off])),
         ["--fw", "allow", name, port, rest @ ..] => { let scope = rest.first().copied().unwrap_or("local"); show(call(&["fw-allow", name, port, scope])) }
         ["--fw", "remove", name] => show(call(&["fw-remove", name])),
+        ["--health"] => { let be: crate::apps::Backend = std::sync::Arc::new(|w: &[String]| { let r: Vec<&str> = w.iter().map(String::as_str).collect(); call(&r) }); crate::apps::health::report(&be, &mut std::io::stdout()); 0 }
+        ["--logs"] => show(call(&["log-list"])),
+        ["--logs", name] => show(call(&["log-tail", name, "40"])),
         ["--sites"] | ["--sites", "list"] => show(call(&["site-list"])),
         ["--sites", "add", d] => show(call(&["site-add", d])),
         ["--sites", "remove", d] => show(call(&["site-remove", d])),
