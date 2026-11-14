@@ -725,6 +725,12 @@ def scenario_testing():
             print("LOG>", app_line(vm, "terminal", 1), flush=True)
         step("minecraft: the server is running as a service", d is not None)
         terminal_run(vm, "sleep 5; mc status craft | cut -c1-14; echo MS$((5-3))", "re:(starting|loading|running|failed|stopped).*MS2|(starting|loading|running|failed|stopped)", 60, "minecraft: the status command tells what the server is doing")
+        terminal_run(vm, "mc list | grep -c craft; echo ML$((5-3))", "re:[1-9]\\d*\\s*ML2", 60, "minecraft: the server list shows the servers")
+        terminal_run(vm, "mc stop craft; sleep 3; mc list | grep -c 'craft stopped'; echo MS$((5-3))", "re:[1-9]\\d*\\s*MS2", 120, "minecraft: a server can be stopped from the list")
+        terminal_run(vm, "mc start craft; sleep 5; mc list | grep -c 'craft running'; echo MR$((5-3))", "re:[1-9]\\d*\\s*MR2", 120, "minecraft: and started again")
+        terminal_run(vm, "mc cmd craft say hello-from-console; for i in $(seq 1 45); do mc log craft | grep -q hello-from-console && break; sleep 3; done; mc log craft | grep -c hello-from-console; echo MC$((5-3))", "re:[1-9]\\d*\\s*MC2", 300, "minecraft: a typed command reaches the running server (its answer is in the log)")
+        terminal_run(vm, "mc create craft3 $(mc versions | head -1 | cut -d' ' -f2) 2 --dir /home/tester/mcgames > /tmp/m4.txt 2>&1; echo M4=$((5-3))", "M4=2", 900, "minecraft: a server can be installed in a folder of your choice")
+        terminal_run(vm, "ls /home/tester/mcgames/craft3/server.jar | wc -l; echo M5=$((5-3))", "re:1\\s*M5=2", 30, "minecraft: it is really in that folder")
         try: terminal_run(vm, "sleep 40; cp /var/log/exec85/craft.log /tmp/c.log; grep -c 'minecraft server version' /tmp/c.log; echo C$((5-3))", "re:[1-9]\\d*C2", 240, "minecraft: the server program starts (Java and the downloaded jar work)")
         except AssertionError:
             dump_file(vm, "/tmp/c.log", 10)

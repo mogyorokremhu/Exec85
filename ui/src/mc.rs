@@ -216,7 +216,46 @@ pub fn eula_text(accepted: bool) -> String {
     format!("#By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).\neula={}\n", accepted)
 }
 
-pub fn server_command(java: &str, ram_gb: u32) -> String { format!("{java} -Xmx{ram_gb}G -Xms1G -jar server.jar nogui") }
+/// The program that starts a server with a console (see `image/overlay/etc/exec85/mc-run`).
+pub const RUN_SCRIPT: &str = "/etc/exec85/mc-run";
+
+pub fn server_command(java: &str, ram_gb: u32) -> String { format!("{RUN_SCRIPT} {java} -Xmx{ram_gb}G -Xms1G -jar server.jar nogui") }
+
+pub const NO_CONSOLE: &str = "This server was installed before the console existed. Add the console (F5), then restart the server.";
+
+fn minecraft_service(ctx: &Ctx, name: &str) -> Result<ServiceDef, String> {
+    services::valid_name(name).map_err(String::from)?;
+    let d = std::fs::read_to_string(ctx.root.join("etc/exec85/services").join(format!("{name}.conf"))).ok().and_then(|t| services::parse_conf(&t)).ok_or_else(|| format!("There is no Minecraft server called {name}."))?;
+    if !d.command.contains("server.jar") { return Err(format!("{name} is not a Minecraft server.")); }
+    Ok(d)
+}
+
+/// Type one line into a running server's console. Anything the server understands works (`say hi`, `op name`, `whitelist add name`, `stop` ...).
+pub fn send_command(ctx: &Ctx, name: &str, text: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+    let d = minecraft_service(ctx, name)?;
+    let text = text.trim();
+    if text.is_empty() { return Err("Type a command first.".into()); }
+    if text.len() > 250 || text.chars().any(|c| c.is_control() || !c.is_ascii()) { return Err("A command is one line of plain letters, digits and symbols (at most 250 characters).".into()); }
+    if !d.command.starts_with(RUN_SCRIPT) { return Err(NO_CONSOLE.into()); }
+    let pipe = ctx.root.join(d.dir.trim_start_matches('/')).join("console.in");
+    let not_running = || "The server is not running, so it cannot take commands. Start it first.".to_string();
+    if !std::fs::metadata(&pipe).map_or(false, |m| m.file_type().is_fifo()) { return Err(not_running()); }
+    // Non-blocking: when nothing is reading (the server is not running) this fails at once instead of waiting forever.
+    let mut f = std::fs::OpenOptions::new().write(true).custom_flags(0o4000).open(&pipe).map_err(|_| not_running())?;
+    f.write_all(format!("{text}\n").as_bytes()).map_err(|_| not_running())?;
+    Ok("Sent.".into())
+}
+
+/// Give a server that was installed without a console the console (its service is changed; it takes effect at the next restart).
+pub fn enable_console(ctx: &Ctx, name: &str) -> Result<String, String> {
+    let d = minecraft_service(ctx, name)?;
+    if d.command.starts_with(RUN_SCRIPT) { return Ok("This server already has a console.".into()); }
+    let def = ServiceDef { command: format!("{RUN_SCRIPT} {}", d.command), ..d };
+    crate::helper::handle(ctx, &["svc-save".to_string(), services::render_conf(&def)])?;
+    Ok(format!("The console is added. Restart {name} to use it."))
+}
 
 fn tmp_file(ctx: &Ctx, name: &str) -> std::path::PathBuf { ctx.root.join("run/exec85").join(name) }
 
@@ -398,12 +437,11 @@ pub fn ensure_java(ctx: &Ctx, major: u32) -> Result<String, String> {
 /// "Accept the EULA and start": for a server that was installed without the tick. Only the person at the keyboard can ask for this;
 /// the file is changed and the service is set to start at boot and started.
 pub fn accept_eula(ctx: &Ctx, name: &str) -> Result<String, String> {
-    services::valid_name(name).map_err(String::from)?;
-    let dir = ctx.root.join("srv/minecraft").join(name);
+    let owner = minecraft_service(ctx, name)?;
+    let dir = ctx.root.join(owner.dir.trim_start_matches('/'));
     let eula = dir.join("eula.txt");
     if !eula.exists() { return Err(format!("There is no Minecraft server called {name}.")); }
     std::fs::write(&eula, eula_text(true)).map_err(|e| e.to_string())?;
-    let owner = std::fs::read_to_string(ctx.root.join("etc/exec85/services").join(format!("{name}.conf"))).ok().and_then(|t| services::parse_conf(&t)).ok_or("The server's service is missing.")?;
     let (code, out) = ctx.runner.run("chown", &[&owner.user, &eula.to_string_lossy()]);
     if code != 0 { return Err(format!("Could not update the EULA file: {}", out.trim())); }
     let def = ServiceDef { autostart: true, ..owner };
@@ -412,7 +450,25 @@ pub fn accept_eula(ctx: &Ctx, name: &str) -> Result<String, String> {
     Ok(format!("The EULA is accepted and {name} is starting (it takes a minute)."))
 }
 
-pub struct Create<'a> { pub kind: ServerType, pub name: &'a str, pub version: &'a str, pub ram_gb: u32, pub eula: bool, pub user: &'a str }
+/// Every Minecraft server on this computer, one per line: `name state folder` (state: running, stopped, crashed, unknown).
+pub fn list(ctx: &Ctx) -> String {
+    let mut out = String::new();
+    for n in crate::helper::list_names(ctx.root) {
+        let Ok(d) = std::fs::read_to_string(ctx.root.join("etc/exec85/services").join(format!("{n}.conf"))).map_err(|_| ()).and_then(|t| services::parse_conf(&t).ok_or(())) else { continue };
+        if !d.command.contains("server.jar") { continue; }
+        let st = match crate::helper::status_of(ctx, &d) { services::Status::Running => "running", services::Status::Stopped => "stopped", services::Status::Crashed => "crashed", services::Status::Unknown => "unknown" };
+        out.push_str(&format!("{} {} {}\n", n, st, d.dir));
+    }
+    out
+}
+
+/// Where Minecraft servers go unless the person chooses another folder (each server gets its own folder inside it).
+pub const DEFAULT_BASE: &str = "/srv/minecraft";
+
+/// A folder a server may be installed in: under /srv or /home, made of plain characters only (it ends up in a service file).
+pub fn valid_base(b: &str) -> bool { crate::recipes::valid_folder(b) && !b.ends_with('/') }
+
+pub struct Create<'a> { pub kind: ServerType, pub name: &'a str, pub version: &'a str, pub ram_gb: u32, pub eula: bool, pub user: &'a str, pub base: &'a str }
 
 /// Download the server, install its Java and define (and, with the EULA accepted, start) the service.
 pub fn create(ctx: &Ctx, c: &Create) -> Result<String, String> {
@@ -421,7 +477,8 @@ pub fn create(ctx: &Ctx, c: &Create) -> Result<String, String> {
     let mem_kb = std::fs::read_to_string(ctx.root.join("proc/meminfo")).unwrap_or_default().lines().find(|l| l.starts_with("MemTotal:")).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
     if !ram_choices(mem_kb).contains(&c.ram_gb) { return Err(format!("This computer does not have enough memory for {} GB. Choose from: {:?}.", c.ram_gb, ram_choices(mem_kb))); }
     if ctx.root.join("etc/exec85/services").join(format!("{}.conf", c.name)).exists() { return Err(format!("A service called {} already exists.", c.name)); }
-    let dir = ctx.root.join("srv/minecraft").join(c.name);
+    if !valid_base(c.base) { return Err("The install folder must be under /srv or /home and may only contain letters, digits and / _ . -".into()); }
+    let dir = ctx.root.join(c.base.trim_start_matches('/')).join(c.name);
     if dir.exists() { return Err(format!("The folder {} already exists.", dir.display())); }
 
     let mf = tmp_file(ctx, "mc-manifest.json");
@@ -452,14 +509,14 @@ pub fn create(ctx: &Ctx, c: &Create) -> Result<String, String> {
     if code != 0 { return Err(format!("Could not give the folder to {}: {}", c.user, out.trim())); }
 
     let def = ServiceDef { name: c.name.into(), description: format!("{} server {}", c.kind.label(), c.version), command: server_command(&java, c.ram_gb),
-        dir: format!("/srv/minecraft/{}", c.name), user: c.user.into(), env: vec![], autostart: c.eula, ports: "25565/tcp".into() };
+        dir: format!("{}/{}", c.base, c.name), user: c.user.into(), env: vec![], autostart: c.eula, ports: "25565/tcp".into() };
     crate::helper::handle(ctx, &["svc-save".to_string(), services::render_conf(&def)])?;
     if c.eula {
         crate::helper::handle(ctx, &["svc-start".to_string(), c.name.to_string()])?;
         let warn = memory_warning(mem_available_kb(), c.ram_gb).map(|w| format!(" WARNING: {w}")).unwrap_or_default();
         Ok(format!("{} {} is installed and starting (it takes a minute). Players connect to this computer's address on port 25565.{warn}", c.kind.label(), c.version))
     } else {
-        Ok(format!("{} {} is installed but will not start until the EULA is accepted: run it again with the EULA accepted, or set eula=true in /srv/minecraft/{}/eula.txt.", c.kind.label(), c.version, c.name))
+        Ok(format!("{} {} is installed but will not start until the EULA is accepted: run it again with the EULA accepted, or set eula=true in {}/{}/eula.txt.", c.kind.label(), c.version, c.base, c.name))
     }
 }
 
@@ -468,6 +525,89 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_server_can_be_installed_in_a_folder_of_your_choice() {
+        let r = world("base", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+        let msg = create(&ctx, &Create { kind: ServerType::Vanilla, name: "mine", version: "1.21.5", ram_gb: 2, eula: true, user: "tester", base: "/home/tester/games" }).unwrap();
+        assert!(msg.contains("installed"), "{msg}");
+        assert!(r.join("home/tester/games/mine/server.jar").exists() && !r.join("srv/minecraft/mine").exists());
+        let conf = std::fs::read_to_string(r.join("etc/exec85/services/mine.conf")).unwrap();
+        assert!(conf.contains("dir=/home/tester/games/mine"), "{conf}");
+        for bad in ["/etc", "/srv", "relative/dir", "/srv/../etc", "/srv/a b", "/srv/x/", "/srv/a;b", "/home/tester/../root", ""] {
+            let f2 = fake(GOOD_SHA);
+            let e = create(&Ctx { root: &r, runner: &f2 }, &Create { kind: ServerType::Vanilla, name: "other", version: "1.21.5", ram_gb: 2, eula: true, user: "tester", base: bad }).unwrap_err();
+            assert!(e.contains("install folder"), "{bad:?}: {e}");
+            assert!(f2.calls.borrow().is_empty(), "nothing ran for {bad:?}");
+        }
+        assert!(valid_base(DEFAULT_BASE) && valid_base("/srv/games/minecraft") && !valid_base("/tmp/x"));
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn the_server_list_shows_every_minecraft_server_and_only_those() {
+        let r = world("srvlist", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+        create(&ctx, &Create { kind: ServerType::Vanilla, name: "one", version: "1.21.5", ram_gb: 2, eula: true, user: "tester", base: DEFAULT_BASE }).unwrap();
+        create(&ctx, &Create { kind: ServerType::Vanilla, name: "two", version: "1.21.5", ram_gb: 2, eula: false, user: "tester", base: "/home/tester/other" }).unwrap();
+        let other = ServiceDef { name: "ticker".into(), description: "x".into(), command: "sleep 100".into(), dir: "/srv/t".into(), user: "tester".into(), env: vec![], autostart: false, ports: String::new() };
+        crate::helper::handle(&ctx, &["svc-save".to_string(), services::render_conf(&other)]).unwrap();
+        let l = list(&ctx);
+        let lines: Vec<&str> = l.lines().collect();
+        assert_eq!(lines.len(), 2, "{l}");
+        assert!(lines[0].starts_with("one ") && lines[0].ends_with(" /srv/minecraft/one"), "{l}");
+        assert!(lines[1].starts_with("two ") && lines[1].ends_with(" /home/tester/other/two"), "{l}");
+        assert!(!l.contains("ticker"), "other services are not listed");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn the_eula_is_accepted_in_the_folder_the_server_really_lives_in() {
+        let r = world("acceptdir", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+        create(&ctx, &Create { kind: ServerType::Vanilla, name: "mine", version: "1.21.5", ram_gb: 2, eula: false, user: "tester", base: "/home/tester/games" }).unwrap();
+        accept_eula(&ctx, "mine").unwrap();
+        assert!(std::fs::read_to_string(r.join("home/tester/games/mine/eula.txt")).unwrap().ends_with("eula=true\n"));
+        let other = ServiceDef { name: "ticker".into(), description: "x".into(), command: "sleep 100".into(), dir: "/srv/t".into(), user: "tester".into(), env: vec![], autostart: false, ports: String::new() };
+        crate::helper::handle(&ctx, &["svc-save".to_string(), services::render_conf(&other)]).unwrap();
+        assert!(accept_eula(&ctx, "ticker").unwrap_err().contains("not a Minecraft server"), "another service is not touched");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn commands_are_typed_into_the_servers_console() {
+        use std::io::Read;
+        let r = world("console", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+        create(&ctx, &Create { kind: ServerType::Vanilla, name: "mine", version: "1.21.5", ram_gb: 2, eula: true, user: "tester", base: DEFAULT_BASE }).unwrap();
+        let conf = std::fs::read_to_string(r.join("etc/exec85/services/mine.conf")).unwrap();
+        assert!(conf.contains("command=/etc/exec85/mc-run "), "new servers get the console: {conf}");
+        assert!(send_command(&ctx, "mine", "say hi").unwrap_err().contains("not running"), "no pipe yet: the server has never run");
+        // what mc-run does: make the pipe and keep it open for reading and writing
+        let pipe = r.join("srv/minecraft/mine/console.in");
+        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        let mut reader = std::fs::OpenOptions::new().read(true).write(true).open(&pipe).unwrap();
+        assert_eq!(send_command(&ctx, "mine", "  say hello world  ").unwrap(), "Sent.");
+        assert_eq!(send_command(&ctx, "mine", "op me").unwrap(), "Sent.");
+        let mut buf = [0u8; 64]; let n = reader.read(&mut buf).unwrap();
+        assert_eq!(String::from_utf8_lossy(&buf[..n]), "say hello world\nop me\n", "each command is one line, in order");
+        for bad in ["", "   ", "two\nlines", "tab\there", "caf\u{e9}", &"x".repeat(300)] { assert!(send_command(&ctx, "mine", bad).is_err(), "{bad:?}"); }
+        assert!(send_command(&ctx, "../x", "say hi").is_err() && send_command(&ctx, "nosuch", "say hi").is_err());
+        let other = ServiceDef { name: "ticker".into(), description: "x".into(), command: "sleep 100".into(), dir: "/srv/t".into(), user: "tester".into(), env: vec![], autostart: false, ports: String::new() };
+        crate::helper::handle(&ctx, &["svc-save".to_string(), services::render_conf(&other)]).unwrap();
+        assert!(send_command(&ctx, "ticker", "say hi").unwrap_err().contains("not a Minecraft server"), "other services get no commands");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn an_old_server_can_be_given_the_console() {
+        let r = world("oldsrv", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+        let old = ServiceDef { name: "old".into(), description: "Minecraft".into(), command: "/opt/java-21/bin/java -Xmx2G -jar server.jar nogui".into(), dir: "/srv/minecraft/old".into(), user: "tester".into(), env: vec![], autostart: true, ports: "25565/tcp".into() };
+        crate::helper::handle(&ctx, &["svc-save".to_string(), services::render_conf(&old)]).unwrap();
+        assert!(send_command(&ctx, "old", "say hi").unwrap_err().contains("before the console existed"));
+        assert!(enable_console(&ctx, "old").unwrap().contains("Restart old"));
+        let conf = std::fs::read_to_string(r.join("etc/exec85/services/old.conf")).unwrap();
+        assert!(conf.contains("command=/etc/exec85/mc-run /opt/java-21/bin/java -Xmx2G -jar server.jar nogui"), "{conf}");
+        assert!(enable_console(&ctx, "old").unwrap().contains("already has"), "twice does no harm");
+        let _ = std::fs::remove_dir_all(&r);
+    }
 
     #[test]
     fn the_log_tells_what_the_server_is_doing() {
@@ -553,7 +693,7 @@ mod tests {
         assert_eq!(ram_choices(6_000_000), vec![2, 4]);
         assert_eq!(ram_choices(16_000_000), vec![2, 4, 8]);
         assert!(eula_text(true).ends_with("eula=true\n") && eula_text(false).ends_with("eula=false\n") && eula_text(true).contains("aka.ms/MinecraftEULA"));
-        assert_eq!(server_command("/usr/lib/jvm/java-21-openjdk/bin/java", 4), "/usr/lib/jvm/java-21-openjdk/bin/java -Xmx4G -Xms1G -jar server.jar nogui");
+        assert_eq!(server_command("/usr/lib/jvm/java-21-openjdk/bin/java", 4), "/etc/exec85/mc-run /usr/lib/jvm/java-21-openjdk/bin/java -Xmx4G -Xms1G -jar server.jar nogui");
         assert!(valid_version_id("1.21.5") && valid_version_id("25w01a") && !valid_version_id("../x") && !valid_version_id("a b") && !valid_version_id(""));
     }
 
@@ -603,7 +743,7 @@ mod tests {
     #[test]
     fn creating_a_server_downloads_checks_and_defines_a_service() {
         let r = world("ok", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
-        let msg = create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap();
+        let msg = create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester", base: DEFAULT_BASE }).unwrap();
         assert!(msg.contains("starting"), "{msg}");
         assert_eq!(std::fs::read_to_string(r.join("srv/minecraft/mc/eula.txt")).unwrap().lines().last(), Some("eula=true"));
         let conf = std::fs::read_to_string(r.join("etc/exec85/services/mc.conf")).unwrap();
@@ -618,7 +758,7 @@ mod tests {
     fn a_java_alpine_does_not_have_is_downloaded_from_temurin_and_checked() {
         let r = world("temurin", 16_000_000); let mut f = fake(GOOD_SHA); f.java = 25; f.alpine_has_java = false;
         let ctx = Ctx { root: &r, runner: &f };
-        create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap();
+        create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester", base: DEFAULT_BASE }).unwrap();
         let conf = std::fs::read_to_string(r.join("etc/exec85/services/mc.conf")).unwrap();
         assert!(conf.contains("/opt/java-25/bin/java -Xmx4G"), "{conf}");
         let calls = f.calls.borrow().join("\n");
@@ -627,7 +767,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&r);
         // a damaged Java download installs nothing
         let r = world("temurin-bad", 16_000_000); let mut f = fake(GOOD_SHA); f.java = 25; f.alpine_has_java = false; f.java_sha = "b".repeat(64);
-        let e = create(&Ctx { root: &r, runner: &f }, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester" }).unwrap_err();
+        let e = create(&Ctx { root: &r, runner: &f }, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 4, eula: true, user: "tester", base: DEFAULT_BASE }).unwrap_err();
         assert!(e.contains("damaged") && !r.join("opt/java-25").exists() && !r.join("srv/minecraft/mc").exists(), "{e}");
         let _ = std::fs::remove_dir_all(&r);
     }
@@ -652,7 +792,7 @@ mod tests {
     #[test]
     fn a_server_installed_without_the_tick_can_be_accepted_and_started_later() {
         let r = world("accept", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
-        create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 2, eula: false, user: "tester" }).unwrap();
+        create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 2, eula: false, user: "tester", base: DEFAULT_BASE }).unwrap();
         assert!(!f.calls.borrow().iter().any(|c| c.contains("rc-service exec85-mc start")));
         let msg = accept_eula(&ctx, "mc").unwrap();
         assert!(msg.contains("starting"), "{msg}");
@@ -666,7 +806,7 @@ mod tests {
     #[test]
     fn without_the_eula_nothing_is_started() {
         let r = world("noeula", 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
-        let msg = create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 2, eula: false, user: "tester" }).unwrap();
+        let msg = create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 2, eula: false, user: "tester", base: DEFAULT_BASE }).unwrap();
         assert!(msg.contains("EULA"), "{msg}");
         assert!(std::fs::read_to_string(r.join("srv/minecraft/mc/eula.txt")).unwrap().ends_with("eula=false\n"));
         assert!(std::fs::read_to_string(r.join("etc/exec85/services/mc.conf")).unwrap().contains("autostart=false"));
@@ -677,7 +817,7 @@ mod tests {
     #[test]
     fn a_damaged_download_installs_nothing() {
         let r = world("bad", 16_000_000); let f = fake(&"f".repeat(40)); let ctx = Ctx { root: &r, runner: &f };
-        let e = create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 2, eula: true, user: "tester" }).unwrap_err();
+        let e = create(&ctx, &Create { kind: ServerType::Vanilla, name: "mc", version: "1.21.5", ram_gb: 2, eula: true, user: "tester", base: DEFAULT_BASE }).unwrap_err();
         assert!(e.contains("damaged"), "{e}");
         assert!(!r.join("srv/minecraft/mc").exists() && !r.join("etc/exec85/services/mc.conf").exists());
         let _ = std::fs::remove_dir_all(&r);
@@ -686,7 +826,7 @@ mod tests {
     #[test]
     fn bad_requests_are_refused_before_anything_is_downloaded() {
         let r = world("refuse", 3_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
-        let mk = |n: &'static str, v: &'static str, ram, u: &'static str| Create { kind: ServerType::Vanilla, name: n, version: v, ram_gb: ram, eula: true, user: u };
+        let mk = |n: &'static str, v: &'static str, ram, u: &'static str| Create { kind: ServerType::Vanilla, name: n, version: v, ram_gb: ram, eula: true, user: u, base: DEFAULT_BASE };
         assert!(create(&ctx, &mk("mc", "1.21.5", 8, "tester")).unwrap_err().contains("enough memory"), "8 GB does not fit a 3 GB computer");
         assert!(create(&ctx, &mk("mc", "1.21.5", 3, "tester")).is_err(), "only 2, 4 or 8");
         assert!(create(&ctx, &mk("../x", "1.21.5", 2, "tester")).is_err());
@@ -720,7 +860,7 @@ mod tests {
     fn paper_and_fabric_servers_are_installed_like_vanilla_with_their_own_checks() {
         for (kind, folder) in [(ServerType::Paper, "plugins"), (ServerType::Fabric, "mods")] {
             let r = world(&format!("kind-{}", kind.id()), 16_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
-            let msg = create(&ctx, &Create { kind, name: "srv", version: "1.21.5", ram_gb: 2, eula: true, user: "tester" }).unwrap();
+            let msg = create(&ctx, &Create { kind, name: "srv", version: "1.21.5", ram_gb: 2, eula: true, user: "tester", base: DEFAULT_BASE }).unwrap();
             assert!(msg.starts_with(kind.label()) && msg.contains("starting"), "{msg}");
             assert!(r.join("srv/minecraft/srv/server.jar").exists() && r.join("srv/minecraft/srv").join(folder).is_dir(), "{folder} folder");
             let conf = std::fs::read_to_string(r.join("etc/exec85/services/srv.conf")).unwrap();
@@ -731,7 +871,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&r);
         }
         let r = world("paper-bad", 16_000_000); let mut f = fake(GOOD_SHA); f.java_sha = "b".repeat(64);
-        let e = create(&Ctx { root: &r, runner: &f }, &Create { kind: ServerType::Paper, name: "srv", version: "1.21.5", ram_gb: 2, eula: true, user: "tester" }).unwrap_err();
+        let e = create(&Ctx { root: &r, runner: &f }, &Create { kind: ServerType::Paper, name: "srv", version: "1.21.5", ram_gb: 2, eula: true, user: "tester", base: DEFAULT_BASE }).unwrap_err();
         assert!(e.contains("damaged") && !r.join("srv/minecraft/srv").exists(), "{e}");
         let _ = std::fs::remove_dir_all(&r);
     }
