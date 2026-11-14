@@ -247,6 +247,7 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "ssh-disable" => crate::ssh::disable(ctx),
         "ssh-addkey" => crate::ssh::add_key(ctx, arg(1)?, arg(2)?),
         "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
+        "mc-status" => crate::mc::server_status(ctx, arg(1)?),
         "net-set" => {
             let name = arg(1)?;
             let mode = match arg(2)? {
@@ -524,6 +525,7 @@ pub fn cli(args: &[String]) -> i32 {
             show(call(&["ssh-addkey", &user, key]))
         }
         ["--mc", "accept", name] => show(call(&["mc-accept", name])),
+        ["--mc", "status", name] => show(call(&["mc-status", name])),
         ["--net", "set", name, mode, rest @ ..] => { let mut v = vec!["net-set", name, mode]; v.extend(rest.iter().copied()); show(call(&v)) }
         ["--net", "wifi", "scan", iface] => show(call(&["wifi-scan", iface])),
         ["--net", "wifi", "connect", iface, ssid] => { let pw = std::env::var("WIFI_PASSWORD").unwrap_or_default(); show(call(&["wifi-connect", iface, ssid, &pw])) }

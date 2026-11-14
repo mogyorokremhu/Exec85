@@ -28,6 +28,11 @@ pub struct Minecraft {
     first: bool,
     /// This computer's address on the local network, for telling players where to connect.
     addr: Option<String>,
+    /// The server that was just installed, and what its log says it is doing (asked again every few seconds on the done screen).
+    created: String,
+    status: String,
+    status_asked: Option<std::time::Instant>,
+    avail_kb: u64,
 }
 
 pub fn parse_versions(text: &str) -> (String, Vec<String>) {
@@ -37,8 +42,9 @@ pub fn parse_versions(text: &str) -> (String, Vec<String>) {
 
 impl Minecraft {
     pub fn new(be: Backend, mem_kb: u64) -> Minecraft {
-        let ram = ram_choices(mem_kb).first().copied().unwrap_or(2);
-        Minecraft { be, job: Job::new(), step: Step::Type, kind: ServerType::Vanilla, type_sel: 0, latest: String::new(), versions: vec![], sel: 0, mem_kb, ram, name: "minecraft".into(), eula: false, focus: 0, msg: String::new(), first: true, addr: None }
+        let avail_kb = crate::mc::mem_available_kb();
+        let ram = ram_choices(mem_kb).first().copied().unwrap_or(2);   // the smallest choice: the safe default
+        Minecraft { created: String::new(), status: String::new(), status_asked: None, avail_kb, be, job: Job::new(), step: Step::Type, kind: ServerType::Vanilla, type_sel: 0, latest: String::new(), versions: vec![], sel: 0, mem_kb, ram, name: "minecraft".into(), eula: false, focus: 0, msg: String::new(), first: true, addr: None }
     }
 
     pub fn system_memory_kb() -> u64 {
@@ -52,7 +58,9 @@ impl Minecraft {
         match (tag.as_str(), r) {
             ("versions", Ok(t)) => { let (l, v) = parse_versions(&t); self.latest = l; self.versions = v; self.sel = 0; self.msg.clear(); }
             ("versions", Err(e)) => self.msg = e,
-            ("create", Ok(m)) => { self.step = Step::Done; self.msg = m; self.addr = super::network::local_ip(); }
+            ("create", Ok(m)) => { self.step = Step::Done; self.msg = m; self.addr = super::network::local_ip(); self.created = self.name.clone(); self.status.clear(); self.status_asked = None; }
+            ("status", Ok(t)) => self.status = t,
+            ("status", Err(_)) => {}
             ("create", Err(e)) => { self.step = Step::Options; self.msg = e; }
             ("accept", Ok(m)) => { self.eula = true; self.msg = m; }
             ("accept", Err(e)) => self.msg = e,
@@ -70,10 +78,15 @@ impl Minecraft {
 impl Application for Minecraft {
     fn kind(&self) -> Kind { Kind::Minecraft }
     fn title(&self) -> String { "Minecraft server".into() }
-    fn interval(&self) -> Option<Duration> { Some(if self.job.busy { Duration::from_millis(400) } else { Duration::from_secs(60) }) }
+    fn interval(&self) -> Option<Duration> { Some(if self.job.busy { Duration::from_millis(400) } else if self.step == Step::Done { Duration::from_secs(3) } else { Duration::from_secs(60) }) }
     fn tick(&mut self, env: &Env) {
         self.finish();
         self.first = false;
+        // On the done screen: what does the server's own log say it is doing?
+        if self.step == Step::Done && !self.created.is_empty() && !self.job.busy && self.status_asked.map_or(true, |t| t.elapsed() >= Duration::from_secs(3)) {
+            self.status_asked = Some(std::time::Instant::now());
+            self.job.start(env, &self.be, "status", vec!["mc-status".into(), self.created.clone()]);
+        }
     }
 
     fn handle(&mut self, k: Key, env: &Env) -> Out {
@@ -174,11 +187,18 @@ impl Application for Minecraft {
                     if !ok.contains(&g) { p.text(x, a.y + 5, "too big", t.dim, None); }
                     x += label.len() + 3;
                 }
-                p.text(a.x, a.y + 7, &format!("This computer has {:.1} GB. A bit more than the chosen amount is used in total.", self.mem_kb as f64 / 1_048_576.0), t.dim, None);
+                p.text(a.x, a.y + 7, &format!("This computer has {:.1} GB ({:.1} GB free now). A bit more than the chosen amount is used in total.", self.mem_kb as f64 / 1_048_576.0, self.avail_kb as f64 / 1_048_576.0), t.dim, None);
+                if let Some(w) = crate::mc::memory_warning(self.avail_kb, self.ram) { for (i, l) in super::wrap_text(&w, a.w).iter().take(5).enumerate() { p.clip(a.x, a.y + 9 + i, a.w, l, t.accent, t.panel); } }
             }
             Step::Done => {
-                p.text(a.x, a.y + 2, "Your Minecraft server is ready", t.accent, None);
-                let mut y = a.y + 4;
+                p.text(a.x, a.y + 2, "Your Minecraft server is installed", t.accent, None);
+                let (state, detail) = self.status.split_once(' ').unwrap_or(("", "Checking what the server is doing..."));
+                let shown = if self.eula || state == "failed" || !state.is_empty() { detail.to_string() } else { String::new() };
+                let color = if state == "failed" { t.accent } else { t.text };
+                if !self.eula && state != "running" && state != "loading" && state != "starting" { /* the EULA note below says it all */ } else {
+                    p.clip(a.x, a.y + 3, a.w, &format!("Status: {shown}"), color, t.panel);
+                }
+                let mut y = a.y + 5;
                 for l in super::wrap_text(&self.msg, a.w) { if y < foot.saturating_sub(1) { p.clip(a.x, y, a.w, &l, t.text, t.panel); y += 1; } }
                 y += 1;
                 let line = match &self.addr { Some(ip) => format!("Players on your network connect to:  {ip}:25565"), None => "Players connect to this computer's address, port 25565.".to_string() };
@@ -207,7 +227,7 @@ impl Application for Minecraft {
     fn state(&self) -> String {
         let n = |s: &str| if s.is_empty() { "-".to_string() } else { s.replace(' ', "_") };
         let step = match self.step { Step::Type => "type", Step::Versions => "versions", Step::Ram => "ram", Step::Options => "options", Step::Working => "working", Step::Done => "done" };
-        format!("name=minecraft step={step} kind={} addr={} versions={} latest={} sel={} ram={} eula={} focus={} busy={} msg={}", self.kind.id(), n(self.addr.as_deref().unwrap_or("")), self.versions.len(), n(&self.latest), n(self.version()), self.ram, self.eula, self.focus, self.job.busy, n(&self.msg.chars().take(60).collect::<String>()))
+        format!("name=minecraft status={} step={step} kind={} addr={} versions={} latest={} sel={} ram={} eula={} focus={} busy={} msg={}", n(self.status.split(' ').next().unwrap_or("")), self.kind.id(), n(self.addr.as_deref().unwrap_or("")), self.versions.len(), n(&self.latest), n(self.version()), self.ram, self.eula, self.focus, self.job.busy, n(&self.msg.chars().take(60).collect::<String>()))
     }
     fn hint(&self) -> &'static str { "Up/Down Choose   Enter Next   F4 Close" }
 }
@@ -223,13 +243,30 @@ mod tests {
         let c2 = calls.clone();
         let be: Backend = Arc::new(move |r: &[String]| {
             c2.lock().unwrap().push(r.join(" "));
-            match r[0].as_str() { "mc-accept" => Ok("The EULA is accepted and the server is starting.".into()), "mc-versions" => Ok("latest 1.21.5\nrelease 1.21.5\nrelease 1.21.4\nrelease 1.8.9\n".into()), "mc-create" if r[2] == "1.8.9" => Err("Installing Java failed".into()), "mc-create" => Ok("Minecraft installed and starting".into()), _ => Ok(String::new()) }
+            match r[0].as_str() { "mc-accept" => Ok("The EULA is accepted and the server is starting.".into()), "mc-versions" => Ok("latest 1.21.5\nrelease 1.21.5\nrelease 1.21.4\nrelease 1.8.9\n".into()), "mc-create" if r[2] == "1.8.9" => Err("Installing Java failed".into()), "mc-create" => Ok("Minecraft installed and starting".into()), "mc-status" => Ok("loading Preparing the spawn area (43%).".into()), _ => Ok(String::new()) }
         });
         (Minecraft::new(be, mem_kb), calls)
     }
     fn settle(m: &mut Minecraft) { let e = Env::for_tests(); for _ in 0..200 { m.tick(&e); if !m.job.busy { m.tick(&e); if !m.job.busy { return; } } std::thread::sleep(Duration::from_millis(5)); } }
     fn key(m: &mut Minecraft, k: &str) { m.handle(parse_key(k).unwrap(), &Env::for_tests()); settle(m); }
     fn text(m: &mut Minecraft, t: &str) { for c in t.chars() { key(m, &c.to_string()); } }
+
+    #[test]
+    fn the_done_screen_asks_the_server_what_it_is_doing() {
+        let (mut m, calls) = app(16_000_000); settle(&mut m);
+        key(&mut m, "enter"); key(&mut m, "enter"); key(&mut m, "enter");                // type, version, memory
+        key(&mut m, "tab"); key(&mut m, " "); key(&mut m, "tab"); key(&mut m, "enter");  // tick the EULA, install
+        assert!(m.state().contains("step=done"), "{}", m.state());
+        std::thread::sleep(Duration::from_millis(20)); settle(&mut m);
+        assert!(calls.lock().unwrap().iter().any(|c| c == "mc-status minecraft"), "{:?}", calls.lock().unwrap());
+        assert!(m.state().contains("status=loading"), "{}", m.state());
+        use crate::gfx::{Canvas, Metrics, Mode, Theme};
+        for (w, h) in [(8usize, 4usize), (40, 12), (100, 36)] {
+            let mut c = Canvas::new(1280, 800);
+            let mut p = Painter { c: &mut c, m: Metrics::for_height(800), t: Theme::new(Mode::Dark) };
+            m.draw(&mut p, Rect { x: 1, y: 1, w, h }, true);
+        }
+    }
 
     #[test]
     fn versions_are_listed_newest_first_with_the_latest_marked() {
