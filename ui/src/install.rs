@@ -70,8 +70,13 @@ pub fn sfdisk_script() -> String {
 /// Bootloader configuration. Everything it needs sits on the EFI/boot partition.
 pub fn limine_conf(root_uuid: &str) -> String {
     format!(
-        "timeout: 0\nquiet: yes\n\n/Exec85\n    protocol: linux\n    path: boot():/vmlinuz\n    module_path: boot():/initramfs\n    cmdline: root=UUID={root_uuid} rootfstype=ext4 rw quiet loglevel=3 vt.global_cursor_default=0 console=tty0 console=ttyS0,115200\n"
+        "timeout: 0\nquiet: yes\n\n/Exec85\n    protocol: linux\n    path: boot():/vmlinuz\n    module_path: boot():/initramfs\n    cmdline: {}\n", boot_cmdline(root_uuid)
     )
+}
+
+/// The kernel command line of the installed system (also used to start it from the installer disc without rebooting).
+pub fn boot_cmdline(root_uuid: &str) -> String {
+    format!("root=UUID={root_uuid} rootfstype=ext4 rw quiet loglevel=3 vt.global_cursor_default=0 console=tty0 console=ttyS0,115200")
 }
 
 pub fn fstab(root_uuid: &str, esp_id: &str) -> String {

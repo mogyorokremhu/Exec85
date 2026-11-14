@@ -373,6 +373,16 @@ def scenario_install():
     finally:
         vm.stop()
 
+    # ---- fourth boot: the install disc is still in the drive. It must not install again: it finds the installed system and starts it ----
+    vm = VM("disc-left-in", cdrom=iso, disk=disk)
+    try:
+        r = vm.wait_for(r"EXEC85_STATE page=existing disk=(\w+) countdown=(\w+)", 600 if SLOW else 120)
+        step("disc left in: the installer notices the installed system", r is not None, "\n".join(vm.text().splitlines()[-20:]))
+        step("disc left in: it starts the installed system by itself and reaches the login screen", vm.wait_for(r"EXEC85_SCREEN login", 240 if SLOW else 90) is not None, "\n".join(vm.text().splitlines()[-25:]))
+        step("disc left in: the login screen is the installed one (host name from the installation)", vm.wait_for(r"EXEC85_LOGIN [^\n]*host=lab85", 20) is not None)
+    finally:
+        vm.stop()
+
 
 APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote"]
 
@@ -734,6 +744,10 @@ def scenario_testing():
                 raise
             terminal_run(vm, f"ls -l /srv/bots/{name}/.env | cut -c1-10", "-rw-------", 30, f"bot: the {lang} bot's token file is private")
             terminal_run(vm, f"svc stop {name}; echo S{tag}$((5-3))", f"S{tag}2", 60, f"bot: the {lang} bot can be stopped")
+
+        # Home folders and the Desktop shortcuts
+        terminal_run(vm, "ls -d ~/Desktop ~/Documents ~/Downloads ~/Music ~/Pictures ~/Videos | wc -l; echo H$((5-3))", "re:6\\s*H2", 30, "home: the six standard folders exist")
+        terminal_run(vm, "ls ~/Desktop | wc -l; echo H$((6-3))", "re:[1-9]\\d*\\s*H3", 30, "home: the Desktop holds shortcuts")
 
         # Quick installers from the app catalog: each is installed for real and must answer
         terminal_run(vm, "svc stop nginx; svc remove nginx; app install website > /tmp/web.txt 2>&1; echo W$((5-3))", "W2", 600, "catalog: the website installer finishes")

@@ -12,6 +12,7 @@ mod apps;
 mod cmds;
 mod crypt;
 mod disks;
+mod existing;
 mod display;
 mod fileops;
 mod font;
@@ -222,6 +223,36 @@ fn stage_installer() -> ! {
         let tx = run_tx.clone();
         thread::spawn(move || install::run_to_shared(cfg, install::Paths::live(), shared, move || { let _ = tx.send(Event::Wake); }));
     });
+    // Already installed? Then offer to start that (and do so by itself after a few seconds) instead of the installer.
+    // The install disc being left in the drive must not mean installing again and again.
+    if !supervisor::cmdline_has("exec85.reinstall") {
+        if let Some(found) = existing::find(&disks::system_disks(), Path::new("/dev")) {
+            let mut ex = existing::Existing::new(cols, rows, system_mode(), found.clone());
+            existing::draw(&ex, &mut s.canvas, &s.m);
+            s.show();
+            announce("installer", &s);
+            log(&ex.state_line());
+            loop {
+                let outcome = match rx.recv_timeout(Duration::from_secs(1)) {
+                    Ok(Event::Key(k)) => ex.handle(k),
+                    Ok(Event::Wake) => None,
+                    Err(RecvTimeoutError::Timeout) => ex.tick(),
+                    Err(RecvTimeoutError::Disconnected) => loop { thread::sleep(Duration::from_secs(3600)); },
+                };
+                match outcome {
+                    Some(existing::Outcome::Reinstall) => break,
+                    Some(existing::Outcome::Start) => {
+                        log("EXEC85_INSTALLER starting the installed system");
+                        if let Err(m) = existing::start(&found) { ex.msg = Some(m); ex.remaining = None; }
+                    }
+                    None => {}
+                }
+                existing::draw(&ex, &mut s.canvas, &s.m);
+                s.show();
+                log(&ex.state_line());
+            }
+        }
+    }
     // TESTING-ONLY: the testing build is started with "exec85.testing" on the kernel command line.
     let testing = supervisor::cmdline_has("exec85.testing");
     let mut inst = installer::Installer::new(cols, rows, system_mode(), installer::load_timezones(Path::new("/usr/share/zoneinfo")), testing, Box::new(disks::system_disks), runner);
