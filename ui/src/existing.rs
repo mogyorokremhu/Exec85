@@ -12,6 +12,7 @@ use crate::paint::Painter;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::process::Command;
 
 pub const COUNTDOWN_SECS: u32 = 10;
 pub const ROOT_LABEL: &str = "exec85";
@@ -58,6 +59,36 @@ pub fn write_handoff(f: &Found) -> Result<(), String> {
 pub const HANDOFF_FILE: &str = "/handoff-root";
 /// Exit code of `exec85 --existing` that means "start the installed system".
 pub const EXIT_START_INSTALLED: i32 = 10;
+
+/// What to do while looking for an installed system at boot.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Wait { Keep, GiveUp }
+
+/// Disks appear a moment after their driver loads (a SATA disk in a slow or virtual machine can take several seconds, and its
+/// partitions a little longer). So: with no disk visible yet, keep looking for up to 6 seconds; once a disk is visible, give it
+/// 1.5 more seconds for its partitions to show up. `found` means an installed system was already seen (then there is nothing to wait for).
+pub fn next_wait(since_start: std::time::Duration, since_first_disk: Option<std::time::Duration>, found: bool) -> Wait {
+    use std::time::Duration;
+    if found { return Wait::GiveUp; }
+    match since_first_disk {
+        None => if since_start >= Duration::from_secs(6) { Wait::GiveUp } else { Wait::Keep },
+        Some(d) => if d >= Duration::from_millis(1500) { Wait::GiveUp } else { Wait::Keep },
+    }
+}
+
+/// Look for an installed Exec85, giving the disks time to appear (see `next_wait`). `mdev -s` makes the device files.
+pub fn find_waiting() -> Option<Found> {
+    let start = std::time::Instant::now();
+    let mut first_disk: Option<std::time::Instant> = None;
+    loop {
+        let list = disks::system_disks();
+        if !list.is_empty() && first_disk.is_none() { first_disk = Some(std::time::Instant::now()); }
+        if let Some(f) = find(&list, Path::new("/dev")) { return Some(f); }
+        if next_wait(start.elapsed(), first_disk.map(|t| t.elapsed()), false) == Wait::GiveUp { return None; }
+        let _ = Command::new("mdev").arg("-s").status();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome { Start, Reinstall }
@@ -165,6 +196,17 @@ mod tests {
         assert_eq!(e.remaining, None);
         for _ in 0..30 { assert_eq!(e.tick(), None, "no more automatic start after a key"); }
         assert_eq!(e.handle(parse_key("enter").unwrap()), Some(Outcome::Start));
+    }
+
+    #[test]
+    fn it_waits_for_slow_disks_but_not_forever() {
+        use std::time::Duration as D;
+        assert_eq!(next_wait(D::from_secs(1), None, false), Wait::Keep, "no disk yet: keep looking");
+        assert_eq!(next_wait(D::from_secs(5), None, false), Wait::Keep);
+        assert_eq!(next_wait(D::from_secs(6), None, false), Wait::GiveUp, "a computer with no disk is not held up for long");
+        assert_eq!(next_wait(D::from_secs(3), Some(D::from_millis(200)), false), Wait::Keep, "a disk just appeared: its partitions may still be coming");
+        assert_eq!(next_wait(D::from_secs(9), Some(D::from_millis(1500)), false), Wait::GiveUp, "a disk without Exec85 on it does not hold the boot either");
+        assert_eq!(next_wait(D::from_secs(0), None, true), Wait::GiveUp, "found: nothing more to wait for");
     }
 
     #[test]

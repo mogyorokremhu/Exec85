@@ -217,7 +217,8 @@ fn stage_splash() -> ! {
 /// (by itself after a few seconds). Exits with EXIT_START_INSTALLED to start it, 0 to carry on with the installer.
 fn stage_existing() -> ! {
     load_layout();
-    let Some(found) = existing::find(&disks::system_disks(), Path::new("/dev")) else { std::process::exit(0) };
+    // The disk driver was only just loaded: give the disks time to appear before deciding there is nothing installed.
+    let Some(found) = existing::find_waiting() else { std::process::exit(0) };
     let mut s = None;
     for _ in 0..50 { match Screen::try_open() { Ok(x) => { s = Some(x); break; } Err(_) => thread::sleep(Duration::from_millis(100)) } }
     let Some(mut s) = s else { log("EXEC85_INSTALLER no display for the existing-install question"); std::process::exit(0) };
