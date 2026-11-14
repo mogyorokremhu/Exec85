@@ -217,7 +217,8 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
             let (name, version, ram, eula, user) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?, arg(5)?);
             let ram_gb: u32 = ram.parse().map_err(|_| "RAM must be 2, 4 or 8.".to_string())?;
             let kind = match w.get(6) { Some(t) => crate::mc::ServerType::parse(t).ok_or("Server type must be vanilla, paper or fabric.")?, None => crate::mc::ServerType::Vanilla };
-            crate::mc::create(ctx, &crate::mc::Create { kind, name, version, ram_gb, eula: eula == "1", user })
+            let base = w.get(7).map(String::as_str).filter(|b| !b.is_empty()).unwrap_or(crate::mc::DEFAULT_BASE);
+            crate::mc::create(ctx, &crate::mc::Create { kind, name, version, ram_gb, eula: eula == "1", user, base })
         }
         "fw-status" => {
             let c = fw_config(ctx.root);
@@ -248,6 +249,7 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "ssh-addkey" => crate::ssh::add_key(ctx, arg(1)?, arg(2)?),
         "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
         "mc-status" => crate::mc::server_status(ctx, arg(1)?),
+        "mc-list" => Ok(crate::mc::list(ctx)),
         "log-list" => {
             let mut v = vec!["kernel".to_string()];
             if ctx.root.join("var/log/messages").exists() { v.push("messages".into()); }
@@ -530,7 +532,8 @@ pub fn cli(args: &[String]) -> i32 {
             let opt = |flag: &str| rest.iter().position(|a| *a == flag).and_then(|i| rest.get(i + 1).copied()).map(String::from);
             let user = opt("--user").unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
             let kind = opt("--type").unwrap_or_else(|| "vanilla".into());
-            show(call(&["mc-create", name, version, ram, if eula { "1" } else { "0" }, &user, &kind]))
+            let base = opt("--dir").unwrap_or_else(|| crate::mc::DEFAULT_BASE.to_string());
+            show(call(&["mc-create", name, version, ram, if eula { "1" } else { "0" }, &user, &kind, &base]))
         }
         ["--bot", "create", name, lang, rest @ ..] => {
             // The token is never given on the command line (others could see it): it comes from $DISCORD_TOKEN or the first line typed in.
@@ -562,6 +565,8 @@ pub fn cli(args: &[String]) -> i32 {
         }
         ["--mc", "accept", name] => show(call(&["mc-accept", name])),
         ["--mc", "status", name] => show(call(&["mc-status", name])),
+        ["--mc", "list"] => show(call(&["mc-list"])),
+        ["--mc", a @ ("start" | "stop" | "restart"), name] => show(call(&[&format!("svc-{a}"), name])),
         ["--net", "set", name, mode, rest @ ..] => { let mut v = vec!["net-set", name, mode]; v.extend(rest.iter().copied()); show(call(&v)) }
         ["--net", "wifi", "scan", iface] => show(call(&["wifi-scan", iface])),
         ["--net", "wifi", "connect", iface, ssid] => { let pw = std::env::var("WIFI_PASSWORD").unwrap_or_default(); show(call(&["wifi-connect", iface, ssid, &pw])) }
