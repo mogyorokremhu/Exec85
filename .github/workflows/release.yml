@@ -32,9 +32,11 @@ jobs:
           cd out
           # Two flavors, released separately:
           #   vX.Y.Z           the normal alpha release
-          #   vX.Y.Z-testing   the TESTING build (installer can be skipped); shown by GitHub as a "Pre-release"
+          #   (the vX.Y.Z-testing flavour was dropped in v0.9.3)
+          # Since v0.9.3 only the normal ISO is published. The testing ISO (installer with "Skip installation") is still built, but only
+          # for the automatic tests in CI: it is never attached to a release.
           case "$TAG" in
-            *-testing) SRC_ISO=exec85-testing.iso; FLAVOR="TESTING (pre-alpha)"; PRE="--prerelease" ;;
+            *-testing) echo "Testing releases are no longer published (the testing ISO is for CI only)."; exit 1 ;;
             *)         SRC_ISO=exec85.iso;         FLAVOR="(alpha)";             PRE="" ;;
           esac
           mv "$SRC_ISO" "exec85-${TAG}.iso"

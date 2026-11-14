@@ -468,7 +468,22 @@ fn parse_headers(text: &str) -> Response {
     r
 }
 
+/// `--resolve` argument for curl: curl's own name lookup (c-ares) failed on VirtualBox's NAT network, so the address is found with the
+/// system's lookup (the one every other program here uses) and handed over. IPv4 first: many home setups have no IPv6.
+pub fn resolve_flag(host: &str, addrs: &[std::net::IpAddr]) -> Option<String> {
+    let ip = addrs.iter().find(|a| a.is_ipv4()).or_else(|| addrs.first())?;
+    Some(format!("{host}:443:{}", match ip { std::net::IpAddr::V6(v) => format!("[{v}]"), v => v.to_string() }))
+}
+
+fn resolve_for(url: &str) -> Option<String> {
+    use std::net::ToSocketAddrs;
+    let host = parse_url(url)?.host;
+    let addrs: Vec<std::net::IpAddr> = (host.as_str(), 443u16).to_socket_addrs().ok()?.map(|a| a.ip()).collect();
+    resolve_flag(&host, &addrs)
+}
+
 impl Curl {
+    fn with_resolve(&self, c: &mut Command, url: &str) { if let Some(r) = resolve_for(url) { c.arg("--resolve").arg(r); } }
     fn base(&self, max_size: u64, secs: u64) -> Command {
         let mut c = Command::new("curl");
         c.args(["-sS", "--proto", "=https", "--proto-redir", "=https", "--max-redirs", "0", "--connect-timeout", "10", "--max-time", &secs.to_string(), "--max-filesize", &max_size.to_string(), "-A", "Exec85-Browser/0.9"]);
@@ -487,6 +502,7 @@ impl Fetcher for Curl {
     fn get(&self, url: &str) -> Result<Response, String> {
         let (hdr, body) = (Curl::tmp("h"), Curl::tmp("b"));
         let mut c = self.base(MAX_PAGE_BYTES, 25);
+        self.with_resolve(&mut c, url);
         c.arg("-D").arg(&hdr).arg("-o").arg(&body).arg("--").arg(url);
         let (code, err, mut r) = self.run(c, &hdr)?;
         r.body = std::fs::read(&body).unwrap_or_default();
@@ -496,6 +512,7 @@ impl Fetcher for Curl {
     fn head(&self, url: &str) -> Result<Response, String> {
         let hdr = Curl::tmp("hh");
         let mut c = self.base(u64::MAX / 2, 25);
+        self.with_resolve(&mut c, url);
         c.arg("-I").arg("-D").arg(&hdr).arg("-o").arg("/dev/null").arg("--").arg(url);
         let (code, err, r) = self.run(c, &hdr)?;
         if code == 0 { Ok(r) } else { Err(curl_error(code, &err)) }
@@ -503,6 +520,7 @@ impl Fetcher for Curl {
     fn download(&self, url: &str, dest: &Path) -> Result<u64, String> {
         let hdr = Curl::tmp("dh");
         let mut c = self.base(4u64 << 30, 3600);
+        self.with_resolve(&mut c, url);
         c.arg("-D").arg(&hdr).arg("-o").arg(dest).arg("--").arg(url);
         let (code, err, r) = self.run(c, &hdr)?;
         if code != 0 { return Err(curl_error(code, &err)); }
@@ -513,7 +531,7 @@ impl Fetcher for Curl {
 
 fn curl_error(code: i32, err: &str) -> String {
     match code {
-        6 => "I could not find that site (name lookup failed). Is the network connected?".into(),
+        6 => "I could not find that site (name lookup failed). Is the network connected? Try in the terminal: wget -O /dev/null https://example.org".into(),
         7 => "I could not connect to that site.".into(),
         28 => "The site took too long to answer.".into(),
         35 | 51 | 58 | 60 | 77 | 83 => "The secure connection failed: the site's certificate could not be trusted.".into(),
@@ -699,6 +717,15 @@ mod tests {
         assert_eq!(file_name(&parse_url("https://example.org/dir/file.tar.gz?x=1").unwrap(), ""), "file.tar.gz");
         assert_eq!(file_name(&parse_url("https://example.org/").unwrap(), ""), "example.org");
         assert_eq!(human_size(1536), "1 KB"); assert_eq!(human_size(5 << 20), "5.0 MB");
+    }
+
+    #[test]
+    fn curl_is_handed_an_address_found_by_the_systems_lookup() {
+        use std::net::IpAddr;
+        let v4: IpAddr = "140.82.121.4".parse().unwrap(); let v6: IpAddr = "2606:50c0::1".parse().unwrap();
+        assert_eq!(resolve_flag("github.com", &[v6, v4]).as_deref(), Some("github.com:443:140.82.121.4"), "IPv4 first");
+        assert_eq!(resolve_flag("github.com", &[v6]).as_deref(), Some("github.com:443:[2606:50c0::1]"));
+        assert_eq!(resolve_flag("github.com", &[]), None, "nothing found: curl tries by itself");
     }
 
     #[test]
