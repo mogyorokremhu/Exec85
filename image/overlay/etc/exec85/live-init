@@ -2,6 +2,8 @@
 # PID 1 of the install disc (kernel option rdinit=/etc/exec85/live-init). Before anything else starts it asks: is Exec85
 # already installed here? If so, and the person (or the countdown) says "start it", it switches to the installed disk
 # right now, without a reboot, so the computer's boot order does not matter. Otherwise it becomes the normal init.
+# The kernel starts this with no search path; without one `xargs modprobe` (loading drivers by hardware name) cannot find modprobe.
+export PATH=/sbin:/usr/sbin:/bin:/usr/bin
 say() { echo "EXEC85_HANDOFF $*" > /dev/console 2>/dev/null; }
 /etc/exec85/early-boot.sh        # mounts, drivers (the init table runs it again later; it then does nothing)
 touch /.early-done
