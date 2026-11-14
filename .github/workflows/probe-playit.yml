@@ -12,13 +12,14 @@ jobs:
     steps:
       - name: Releases and files
         run: |
-          for tag in 2.0.2 1.2.0; do echo "=== $tag"; gh api repos/playit-cloud/playit-agent/releases/tags/$tag --jq '.assets[]|[.name,.size,(.digest // "-")]|@tsv' | grep -iE "linux|SHA|sum" ; done
+          gh api "repos/playit-cloud/playit-agent/releases?per_page=12" --jq '.[]|[.tag_name,.name,.prerelease,(.assets|length)]|@tsv'
+          for tag in $(gh api "repos/playit-cloud/playit-agent/releases?per_page=12" --jq '.[]|select(.prerelease==false)|.tag_name' | head -3); do echo "=== $tag"; gh api "repos/playit-cloud/playit-agent/releases/tags/$tag" --jq '.assets[]|[.name,.size,(.digest // "-")]|@tsv' | grep -iE "linux|SHA|sum" ; done
       - name: Download the 64-bit Linux files
         run: |
           mkdir -p p && cd p
-          for tag in 2.0.2 1.2.0; do
+          for tag in $(gh api "repos/playit-cloud/playit-agent/releases?per_page=12" --jq '.[]|select(.prerelease==false)|.tag_name' | head -2); do
             mkdir -p $tag
-            for n in $(gh api repos/playit-cloud/playit-agent/releases/tags/$tag --jq '.assets[].name' | grep -iE "linux" | grep -iE "amd64|x86_64" | grep -viE "\.(deb|rpm|apk|tar|zip)$|gui"); do
+            for n in $(gh api "repos/playit-cloud/playit-agent/releases/tags/$tag" --jq '.assets[].name' | grep -iE "linux" | grep -iE "amd64|x86_64" | grep -viE "\.(deb|rpm|apk|tar|zip)$|gui"); do
               curl -fsSL -o $tag/$n https://github.com/playit-cloud/playit-agent/releases/download/$tag/$n && chmod +x $tag/$n
             done
           done
