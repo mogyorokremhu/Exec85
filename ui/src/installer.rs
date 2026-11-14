@@ -84,6 +84,8 @@ impl Picker {
 pub struct Installer {
     /// Background music: None = there is none, Some(true) = playing, Some(false) = switched off (F8).
     pub music: Option<bool>,
+    /// Set when an installed Exec85 shows up while the Welcome screen is open (a slow disk): the disk's name.
+    pub existing_note: Option<String>,
     pub cols: usize,
     pub rows: usize,
     pub step: Step,
@@ -138,7 +140,7 @@ impl Installer {
         theme.sel = if mode == Mode::Light { 1 } else { 0 };
         let kb_items = Layout::ALL.iter().map(|l| format!("{} ({})", l.label(), l.id())).collect();
         Installer {
-            music: None, cols, rows, step: Step::Welcome, mode, layout: Layout::Us,
+            music: None, existing_note: None, cols, rows, step: Step::Welcome, mode, layout: Layout::Us,
             welcome: Picker::new(vec!["Install Exec85 on this computer".into(), "Try Exec85 without installing".into()], false),
             theme, kb: Picker::new(kb_items, true), tz, disk_pk: Picker::new(vec![], false), disks: vec![],
             hostname: "exec85".into(), username: String::new(), pw1: String::new(), pw2: String::new(), pw_field: 0, empty_warned: false,
@@ -402,6 +404,9 @@ pub fn draw(inst: &Installer, c: &mut Canvas, m: &Metrics) {
             heading(&mut p, "Welcome to Exec85");
             help(&mut p, "A small, fast, keyboard-driven operating system for home servers. Use the arrow keys, then press Enter.");
             list(&mut p, inst, la);
+            if let Some(d) = &inst.existing_note {
+                p.paragraph(x, a.y + a.h.saturating_sub(5), w, &format!("Exec85 is ALREADY INSTALLED on disk {d}. To start it: restart the computer and take this disc out (or put the hard disk first in the boot order). Installing again ERASES it."), t.accent, t.panel);
+            }
         }
         Step::Theme => {
             heading(&mut p, "Light or dark?");

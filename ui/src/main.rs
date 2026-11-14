@@ -279,7 +279,23 @@ fn stage_installer() -> ! {
     announce("installer", &s);
     log(&inst.state_line());
     loop {
-        let ev = match rx.recv_timeout(Duration::from_secs(3600)) { Ok(e) => e, Err(RecvTimeoutError::Timeout) => continue, Err(RecvTimeoutError::Disconnected) => loop { thread::sleep(Duration::from_secs(3600)); } };
+        let ev = match rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(e) => e,
+            Err(RecvTimeoutError::Timeout) => {
+                // A disk can show up late (a slow virtual machine). If an installed Exec85 appears while the Welcome screen is open, say so.
+                if inst.step == installer::Step::Welcome && inst.existing_note.is_none() && !supervisor::cmdline_has("exec85.reinstall") {
+                    if let Some(f) = existing::find(&disks::system_disks(), Path::new("/dev")) {
+                        inst.existing_note = Some(f.disk);
+                        log("EXEC85_INSTALLER existing install noticed late");
+                        installer::draw(&inst, &mut s.canvas, &s.m);
+                        s.show();
+                        log(&inst.state_line());
+                    }
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => loop { thread::sleep(Duration::from_secs(3600)); },
+        };
         let mut events = vec![ev];
         while let Ok(e) = rx.try_recv() { events.push(e); }
         for e in events {

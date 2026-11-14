@@ -383,6 +383,17 @@ def scenario_install():
     finally:
         vm.stop()
 
+    # ---- the disc is in the drive AND the installed disk only shows up several seconds after boot (a slow virtual machine) ----
+    vm = VM("disc-left-late", cdrom=iso, extra=["-device", "qemu-xhci,id=xhci", "-drive", f"if=none,id=late,file={disk},format=raw,cache=unsafe"])
+    try:
+        time.sleep(8)      # the live system is up and has looked for disks by now; the disk appears only now
+        vm.monitor("device_add usb-storage,drive=late,id=latedev,bus=xhci.0")
+        r = vm.wait_for(r"EXEC85_STATE page=existing disk=(\w+) countdown=(\w+)", 120)
+        step("disc left in, disk appears late: the installer still notices the installed system", r is not None, "\n".join(vm.text().splitlines()[-25:]))
+        step("disc left in, disk appears late: it starts the installed system", vm.wait_for(r"EXEC85_LOGIN [^\n]*host=lab85", 240 if SLOW else 120) is not None, "\n".join(vm.text().splitlines()[-25:]))
+    finally:
+        vm.stop()
+
 
 APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel"]
 

@@ -64,27 +64,56 @@ pub const EXIT_START_INSTALLED: i32 = 10;
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Wait { Keep, GiveUp }
 
-/// Disks appear a moment after their driver loads (a SATA disk in a slow or virtual machine can take several seconds, and its
-/// partitions a little longer). So: with no disk visible yet, keep looking for up to 6 seconds; once a disk is visible, give it
-/// 1.5 more seconds for its partitions to show up. `found` means an installed system was already seen (then there is nothing to wait for).
-pub fn next_wait(since_start: std::time::Duration, since_first_disk: Option<std::time::Duration>, found: bool) -> Wait {
-    use std::time::Duration;
-    if found { return Wait::GiveUp; }
-    match since_first_disk {
-        None => if since_start >= Duration::from_secs(6) { Wait::GiveUp } else { Wait::Keep },
-        Some(d) => if d >= Duration::from_millis(1500) { Wait::GiveUp } else { Wait::Keep },
+/// What the look at the disks has seen so far.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Look {
+    pub since_start: std::time::Duration,
+    /// Time since the first disk appeared (None: no disk yet).
+    pub since_first_disk: Option<std::time::Duration>,
+    /// Does any visible disk already have partitions listed? (If not, its partition table may still be being read.)
+    pub partitions_seen: bool,
+    /// Is there a storage controller (SATA, IDE, NVMe, USB) in this computer, so that a disk can still show up?
+    pub controller: bool,
+    /// An installed Exec85 was already found: nothing more to wait for.
+    pub found: bool,
+}
+
+/// Disks appear a while after their driver loads: a few seconds on a normal computer, much longer in a virtual machine without
+/// hardware help (a VirtualBox log showed the disk appearing long after the screen). So the wait is generous when there is
+/// a storage controller and a disk may still come, and short when there is none; once a disk is visible it is given a little
+/// longer for its partitions to be read (more if none are listed yet), and then we stop.
+pub fn next_wait(l: &Look) -> Wait {
+    use std::time::Duration as D;
+    if l.found { return Wait::GiveUp; }
+    match l.since_first_disk {
+        None => if l.since_start >= if l.controller { D::from_secs(20) } else { D::from_secs(2) } { Wait::GiveUp } else { Wait::Keep },
+        Some(d) => if d >= if l.partitions_seen { D::from_secs(3) } else { D::from_secs(6) } { Wait::GiveUp } else { Wait::Keep },
     }
+}
+
+/// True when a PCI device of a class that can hold a disk is present: mass storage (0x01..) or a USB controller (0x0c03).
+pub fn storage_controller_present(pci_dir: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(pci_dir) else { return false };
+    rd.flatten().any(|e| std::fs::read_to_string(e.path().join("class")).map_or(false, |c| { let c = c.trim().trim_start_matches("0x"); c.starts_with("01") || c.starts_with("0c03") }))
+}
+
+/// Does `disk` (a folder in /sys/block) list at least one partition (sda1 ...)?
+pub fn has_partitions(sys_block: &Path, disk: &str) -> bool {
+    std::fs::read_dir(sys_block.join(disk)).map_or(false, |rd| rd.flatten().any(|e| { let n = e.file_name().to_string_lossy().into_owned(); n.starts_with(disk) && n.len() > disk.len() }))
 }
 
 /// Look for an installed Exec85, giving the disks time to appear (see `next_wait`). `mdev -s` makes the device files.
 pub fn find_waiting() -> Option<Found> {
     let start = std::time::Instant::now();
+    let controller = storage_controller_present(Path::new("/sys/bus/pci/devices"));
     let mut first_disk: Option<std::time::Instant> = None;
     loop {
         let list = disks::system_disks();
         if !list.is_empty() && first_disk.is_none() { first_disk = Some(std::time::Instant::now()); }
-        if let Some(f) = find(&list, Path::new("/dev")) { return Some(f); }
-        if next_wait(start.elapsed(), first_disk.map(|t| t.elapsed()), false) == Wait::GiveUp { return None; }
+        let found = find(&list, Path::new("/dev"));
+        if found.is_some() { return found; }
+        let look = Look { since_start: start.elapsed(), since_first_disk: first_disk.map(|t| t.elapsed()), partitions_seen: list.iter().any(|d| has_partitions(Path::new("/sys/block"), &d.name)), controller, found: false };
+        if next_wait(&look) == Wait::GiveUp { return None; }
         let _ = Command::new("mdev").arg("-s").status();
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
@@ -201,12 +230,35 @@ mod tests {
     #[test]
     fn it_waits_for_slow_disks_but_not_forever() {
         use std::time::Duration as D;
-        assert_eq!(next_wait(D::from_secs(1), None, false), Wait::Keep, "no disk yet: keep looking");
-        assert_eq!(next_wait(D::from_secs(5), None, false), Wait::Keep);
-        assert_eq!(next_wait(D::from_secs(6), None, false), Wait::GiveUp, "a computer with no disk is not held up for long");
-        assert_eq!(next_wait(D::from_secs(3), Some(D::from_millis(200)), false), Wait::Keep, "a disk just appeared: its partitions may still be coming");
-        assert_eq!(next_wait(D::from_secs(9), Some(D::from_millis(1500)), false), Wait::GiveUp, "a disk without Exec85 on it does not hold the boot either");
-        assert_eq!(next_wait(D::from_secs(0), None, true), Wait::GiveUp, "found: nothing more to wait for");
+        let look = |start: u64, first: Option<u64>, parts: bool, controller: bool, found: bool| Look { since_start: D::from_secs(start), since_first_disk: first.map(D::from_secs), partitions_seen: parts, controller, found };
+        assert_eq!(next_wait(&look(10, None, false, true, false)), Wait::Keep, "a controller is there: a disk may still come, even after 10 seconds (slow VM)");
+        assert_eq!(next_wait(&look(19, None, false, true, false)), Wait::Keep);
+        assert_eq!(next_wait(&look(20, None, false, true, false)), Wait::GiveUp, "but not forever");
+        assert_eq!(next_wait(&look(1, None, false, false, false)), Wait::Keep);
+        assert_eq!(next_wait(&look(2, None, false, false, false)), Wait::GiveUp, "no controller at all: nothing to wait for");
+        assert_eq!(next_wait(&look(9, Some(1), false, true, false)), Wait::Keep, "a disk is there but its partitions are not listed yet");
+        assert_eq!(next_wait(&look(9, Some(6), false, true, false)), Wait::GiveUp, "a blank disk does not hold the boot for long");
+        assert_eq!(next_wait(&look(9, Some(2), true, true, false)), Wait::Keep, "partitions listed: the device files may still be coming");
+        assert_eq!(next_wait(&look(9, Some(3), true, true, false)), Wait::GiveUp, "a disk with other systems on it does not either");
+        assert_eq!(next_wait(&look(0, None, false, true, true)), Wait::GiveUp, "found: nothing more to wait for");
+    }
+
+    #[test]
+    fn storage_controllers_and_partitions_are_recognised_in_sysfs() {
+        let d = std::env::temp_dir().join(format!("exec85-pci-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let dev = |n: &str, class: &str| { std::fs::create_dir_all(d.join("pci").join(n)).unwrap(); std::fs::write(d.join("pci").join(n).join("class"), class).unwrap(); };
+        assert!(!storage_controller_present(&d.join("pci")));
+        dev("0000:00:02.0", "0x030000\n");                  // a display
+        dev("0000:00:03.0", "0x020000\n");                  // a network card
+        assert!(!storage_controller_present(&d.join("pci")));
+        dev("0000:00:1f.2", "0x010601\n");                  // SATA (AHCI)
+        assert!(storage_controller_present(&d.join("pci")));
+        let _ = std::fs::remove_dir_all(d.join("pci")); dev("0000:00:0d.0", "0x0c0330\n");   // a USB 3 controller
+        assert!(storage_controller_present(&d.join("pci")));
+        std::fs::create_dir_all(d.join("block/sda/sda1")).unwrap(); std::fs::create_dir_all(d.join("block/sdb/queue")).unwrap();
+        assert!(has_partitions(&d.join("block"), "sda") && !has_partitions(&d.join("block"), "sdb") && !has_partitions(&d.join("block"), "nosuch"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

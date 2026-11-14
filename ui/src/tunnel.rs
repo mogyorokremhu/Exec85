@@ -47,9 +47,14 @@ fn download(ctx: &Ctx, p: &Piece) -> Result<(), String> {
     let tmp = at(ctx, &format!("run/exec85/{}", p.asset));
     std::fs::create_dir_all(tmp.parent().unwrap()).map_err(|e| e.to_string())?;
     let url = format!("{BASE_URL}/{RELEASE}/{}", p.asset);
-    // curl checks the server's certificate (the small downloader of the base system does not); then the file's SHA-256 must be the pinned one.
-    let got = run_ok(ctx, &format!("Downloading {}", p.asset), "curl", &["-fsSL", "--proto", "=https", "--max-time", "900", "-o", &tmp.to_string_lossy(), &url]);
-    if let Err(e) = got { let _ = std::fs::remove_file(&tmp); return Err(e); }
+    // The system's own downloader (like the Minecraft and Java downloads): it uses the system's name lookup, which works on every network
+    // we have seen (curl's own lookup failed behind VirtualBox's NAT). It does not check the server's certificate, but the file's SHA-256
+    // must be the pinned one, so a changed or fake file is never installed.
+    let got = ctx.runner.run("wget", &["-q", "-O", &tmp.to_string_lossy(), &url]);
+    if got.0 != 0 {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Downloading {} failed. Is this computer connected to the internet? (Try: wget -O /dev/null https://github.com) {}", p.asset, got.1.lines().last().unwrap_or("").trim()));
+    }
     let (code, out) = ctx.runner.run("sha256sum", &[&tmp.to_string_lossy()]);
     let sum = out.split_whitespace().next().unwrap_or("").to_lowercase();
     if code != 0 || sum != p.sha256 { let _ = std::fs::remove_file(&tmp); return Err(format!("The downloaded file {} is not the one expected (its checksum does not match). Nothing was installed.", p.asset)); }
@@ -172,7 +177,7 @@ mod tests {
         fn run(&self, c: &str, a: &[&str]) -> (i32, String) {
             self.calls.borrow_mut().push(format!("{c} {}", a.join(" ")));
             match c {
-                "curl" => { if self.offline { return (6, "could not resolve host".into()); } let to = a[a.iter().position(|x| *x == "-o").unwrap() + 1]; std::fs::write(to, "BINARY").unwrap(); (0, String::new()) }
+                "wget" => { if self.offline { return (1, "wget: bad address 'github.com'".into()); } let to = a[a.iter().position(|x| *x == "-O").unwrap() + 1]; std::fs::write(to, "BINARY").unwrap(); (0, String::new()) }
                 "sha256sum" => { let want = if a[0].ends_with(CLI.asset) { CLI.sha256 } else { DAEMON.sha256 }; (0, format!("{}  {}\n", if self.tamper { "0".repeat(64) } else { want.to_string() }, a[0])) }
                 _ => (0, String::new()),
             }
@@ -201,7 +206,7 @@ mod tests {
         let msg = install(&c).unwrap();
         assert!(msg.contains("claim link"), "{msg}");
         let calls = f.calls.borrow().join("\n");
-        for want in ["https://github.com/playit-cloud/playit-agent/releases/download/v2.0.2/playit-linux-amd64", "https://github.com/playit-cloud/playit-agent/releases/download/v2.0.2/playit-cli-linux-amd64", "--proto =https", "chown -R playit:playit /var/lib/playit", "rc-service exec85-playit start"] { assert!(calls.contains(want), "{want} in\n{calls}"); }
+        for want in ["https://github.com/playit-cloud/playit-agent/releases/download/v2.0.2/playit-linux-amd64", "https://github.com/playit-cloud/playit-agent/releases/download/v2.0.2/playit-cli-linux-amd64", "chown -R playit:playit /var/lib/playit", "rc-service exec85-playit start"] { assert!(calls.contains(want), "{want} in\n{calls}"); }
         assert_eq!(std::fs::metadata(r.join("usr/local/bin/playitd")).unwrap().permissions().mode() & 0o777, 0o755);
         assert!(r.join("usr/local/bin/playit").exists() && installed(&c));
         let conf = std::fs::read_to_string(r.join("etc/exec85/services/playit.conf")).unwrap();
@@ -217,7 +222,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&r);
         // no internet: a clear failure, nothing installed
         let r = world("offline"); let mut f = fake(); f.offline = true; let c = Ctx { root: &r, runner: &f };
-        assert!(install(&c).unwrap_err().contains("failed") && !installed(&c));
+        let e = install(&c).unwrap_err(); assert!(e.contains("failed") && e.contains("connected to the internet") && e.contains("bad address") && !installed(&c), "{e}");
         let _ = std::fs::remove_dir_all(&r);
     }
 
