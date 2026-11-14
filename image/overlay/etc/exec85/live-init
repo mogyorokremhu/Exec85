@@ -15,6 +15,7 @@ if ! grep -qw exec85.reinstall /proc/cmdline; then
       echo 1 > /newroot/etc/exec85/handed-over
       for m in dev proc sys; do mkdir -p /newroot/$m; mount -o move /$m /newroot/$m; done
       say "switching to $dev"
+      : > /init        # busybox switch_root insists that the old root has an /init file (it only checks that it is a regular file)
       exec switch_root /newroot /sbin/init
     fi
     say "could not mount $dev; carrying on with the installer"

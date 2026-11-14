@@ -553,6 +553,13 @@ def scenario_testing():
         # ---- pendrives: plug in, browse, write, eject, pull out ----
         vm.monitor("device_add usb-storage,drive=usbd,id=usbdev,bus=xhci.0")
         m = vm.wait_for(r"EXEC85_USB added dev=(\S+) fs=vfat label=TESTUSB mount=(\S+)", 90)
+        if m is None:
+            terminal_run(vm, "ls /sys/block | tr '\\n' ' '; echo U$((5-3))", "U2", 20, "diagnostic")
+            print("DIAG-block>", (app_line(vm, "terminal", 1) or {}).get("l1"), flush=True)
+            terminal_run(vm, "lsmod | grep -E 'xhci|usb_storage|bochs|simpledrm|sd_mod' | cut -d' ' -f1 | tr '\\n' ' '; echo U$((6-3))", "U3", 20, "diagnostic")
+            print("DIAG-mods>", app_line(vm, "terminal", 1), flush=True)
+            terminal_run(vm, "ls /dev/dri | tr '\\n' ' '; ls /dev | grep -c sd; echo U$((7-3))", "U4", 20, "diagnostic")
+            print("DIAG-dev>", app_line(vm, "terminal", 1), flush=True)
         step("usb: the plugged-in pendrive is detected and mounted", m is not None, "\n".join(l for l in vm.text().splitlines() if "EXEC85_USB" in l))
         mount = m[2]
         d = vm.wait_line("EXEC85_STATE", lambda d: "TESTUSB" in d.get("drives", ""), 30)
