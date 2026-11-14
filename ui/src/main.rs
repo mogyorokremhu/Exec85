@@ -17,6 +17,7 @@ mod fileops;
 mod font;
 mod firewall;
 mod fs;
+mod homedirs;
 mod gfx;
 mod input;
 mod install;

@@ -31,6 +31,12 @@ use std::time::Duration;
 pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft, DiscordBot, Remote, Catalog }
 
 impl Kind {
+    /// The app a shortcut file names ("app:terminal").
+    pub fn parse(name: &str) -> Option<Kind> {
+        [Kind::Notepad, Kind::Terminal, Kind::Paint, Kind::Monitor, Kind::DiskUsage, Kind::Network, Kind::Clock, Kind::Calculator, Kind::Reversi, Kind::Snake, Kind::Services, Kind::Software, Kind::Minecraft, Kind::DiscordBot, Kind::Remote, Kind::Catalog]
+            .into_iter().find(|k| k.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Kind::Notepad => "notepad", Kind::Terminal => "terminal", Kind::Paint => "paint", Kind::Monitor => "monitor",

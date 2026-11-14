@@ -120,7 +120,11 @@ pub fn file_name_from_url(url: &str) -> String {
 pub fn get(args: &[String], out: &mut dyn Write) -> i32 {
     let Some(url) = args.first() else { let _ = writeln!(out, "usage: get ADDRESS [file name]"); return 2 };
     if !(url.starts_with("http://") || url.starts_with("https://")) { let _ = writeln!(out, "{RED}get: the address must start with http:// or https://{OFF}"); return 2; }
-    let name = args.get(1).cloned().unwrap_or_else(|| file_name_from_url(url));
+    // With no name given the file goes into the Downloads folder (when there is one), under the name the address suggests.
+    let name = args.get(1).cloned().unwrap_or_else(|| {
+        let n = file_name_from_url(url);
+        match std::env::var_os("HOME").map(|h| crate::homedirs::downloads_dir(Path::new(&h))) { Some(d) if d.is_dir() => d.join(n).to_string_lossy().into_owned(), _ => n }
+    });
     if Path::new(&name).exists() { let _ = writeln!(out, "{RED}get: {name} already exists; give another name{OFF}"); return 1; }
     let _ = writeln!(out, "Downloading {BOLD}{name}{OFF} ...");
     let _ = out.flush();

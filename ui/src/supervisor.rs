@@ -42,7 +42,7 @@ pub fn stage(exe: &Path, arg: &str, as_user: Option<&User>, start_dir: Option<&s
     match as_user {
         Some(u) => {
             cmd.env("HOME", &u.home).env("USER", &u.name).env("LOGNAME", &u.name).env("SHELL", &u.shell);
-            if Path::new(&u.home).is_dir() { cmd.current_dir(&u.home); }
+            if Path::new(&u.home).is_dir() { let _ = crate::homedirs::ensure(Path::new(&u.home), u.uid, u.gid); cmd.current_dir(&u.home); }
             if start_dir.is_none() { cmd.env("EXEC85_START", &u.home); }
             let (uid, gid) = (u.uid, u.gid);
             let groups = account::group_ids(Path::new("/"), u);
