@@ -1,0 +1,31 @@
+name: probe-playit
+# A short experiment (about a minute): what does the playit agent look like, and does it run on Alpine's musl C library?
+# It runs only when this file is pushed. It is removed again once the findings are used.
+on:
+  push:
+    paths: ['.github/workflows/probe-playit.yml']
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Releases and files
+        run: |
+          for tag in 2.0.2 1.2.0; do echo "=== $tag"; gh api repos/playit-cloud/playit-agent/releases/tags/$tag --jq '.assets[]|[.name,.size,(.digest // "-")]|@tsv' | grep -iE "linux|SHA|sum" ; done
+      - name: Download the 64-bit Linux files
+        run: |
+          mkdir -p p && cd p
+          for tag in 2.0.2 1.2.0; do
+            mkdir -p $tag
+            for n in $(gh api repos/playit-cloud/playit-agent/releases/tags/$tag --jq '.assets[].name' | grep -iE "linux" | grep -iE "amd64|x86_64" | grep -viE "\.(deb|rpm|apk|tar|zip)$|gui"); do
+              curl -fsSL -o $tag/$n https://github.com/playit-cloud/playit-agent/releases/download/$tag/$n && chmod +x $tag/$n
+            done
+          done
+          ls -lR; file */* || true
+      - name: Options and first start on Alpine
+        run: |
+          for f in p/*/*; do
+            echo "=================== $f"
+            docker run --rm -v "$PWD/p":/p -e HOME=/tmp/h alpine:3.22 sh -c "echo '--- version'; /$f --version 2>&1 | head -5; echo '--- help'; /$f --help 2>&1 | head -60; echo '--- first start, 25 s, no terminal'; timeout 25 /$f 2>&1 | head -40; echo '--- exit'; ls -laR /tmp/h /etc/playit 2>/dev/null | head -20" || true
+          done
