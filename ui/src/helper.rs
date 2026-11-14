@@ -248,6 +248,17 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "ssh-addkey" => crate::ssh::add_key(ctx, arg(1)?, arg(2)?),
         "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
         "mc-status" => crate::mc::server_status(ctx, arg(1)?),
+        "site-list" => Ok(crate::web::parse_allow(&std::fs::read_to_string(ctx.root.join("etc/exec85/sites.allow")).unwrap_or_default()).join("\n")),
+        "site-add" | "site-remove" => {
+            let add = w[0] == "site-add";
+            let path = ctx.root.join("etc/exec85/sites.allow");
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let new = crate::web::edit_allow(&text, arg(1)?, add)?;
+            if let Some(dir) = path.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
+            std::fs::write(&path, new).map_err(|e| e.to_string())?;
+            { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)); }
+            Ok(format!("{} is now {}.", arg(1)?.to_ascii_lowercase(), if add { "allowed" } else { "no longer allowed" }))
+        }
         "net-set" => {
             let name = arg(1)?;
             let mode = match arg(2)? {
@@ -534,6 +545,20 @@ pub fn cli(args: &[String]) -> i32 {
         ["--fw", on_off @ ("on" | "off")] => show(call(&["fw-enable", on_off])),
         ["--fw", "allow", name, port, rest @ ..] => { let scope = rest.first().copied().unwrap_or("local"); show(call(&["fw-allow", name, port, scope])) }
         ["--fw", "remove", name] => show(call(&["fw-remove", name])),
+        ["--sites"] | ["--sites", "list"] => show(call(&["site-list"])),
+        ["--sites", "add", d] => show(call(&["site-add", d])),
+        ["--sites", "remove", d] => show(call(&["site-remove", d])),
+        ["--web", url, rest @ ..] => {
+            // Read a page as plain text (what the browser would show). Same rules: only allowed sites.
+            let width = rest.first().and_then(|w| w.parse::<usize>().ok()).unwrap_or(80).clamp(20, 200);
+            let list = crate::web::parse_allow(&std::fs::read_to_string(crate::web::ALLOW_FILE).unwrap_or_default());
+            match crate::web::navigate(&crate::web::Curl, &list, url) {
+                Ok(crate::web::Nav::Page { url, html }) => { let b = crate::web::parse_url(&url).unwrap(); let d = crate::web::render(&html, width, &b); for i in 0..d.lines.len() { let _ = writeln!(std::io::stdout(), "{}", d.line_text(i)); } 0 }
+                Ok(crate::web::Nav::Text { text, .. }) => { let _ = writeln!(std::io::stdout(), "{}", text.trim_end()); 0 }
+                Ok(crate::web::Nav::File { name, size, .. }) => { let _ = writeln!(std::io::stdout(), "This is a file: {name} ({}). Download it with the browser or: get ADDRESS", size.map_or("size unknown".to_string(), crate::web::human_size)); 0 }
+                Err(e) => { let _ = writeln!(std::io::stderr(), "error: {e}"); 1 }
+            }
+        }
         ["--usb", "eject", mount] => show(call(&["usb-eject", mount])),
         ["--pkg", a @ ("add" | "del"), pkgs @ ..] if !pkgs.is_empty() => { let mut v = vec![format!("apk-{a}")]; v.extend(pkgs.iter().map(|p| p.to_string())); let r: Vec<&str> = v.iter().map(String::as_str).collect(); show(call(&r)) }
         ["--pkg", "search", q] => show(call(&["apk-search", q])),

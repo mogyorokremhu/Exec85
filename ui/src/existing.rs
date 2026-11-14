@@ -60,14 +60,16 @@ pub fn start(f: &Found) -> Result<(), String> {
     let cmd = crate::install::boot_cmdline(&f.root_uuid);
     // -s lets the kernel hand over the screen details itself (so the screen keeps working); fall back to the older way.
     let mut loaded = false;
+    let mut why = String::new();
     for extra in [Some("-s"), None] {
         let mut c = Command::new("kexec");
         if let Some(e) = extra { c.arg(e); }
         let r = c.args(["-l", &kernel, &format!("--initrd={initrd}"), &format!("--command-line={cmd}")]).output().map_err(|e| format!("kexec is not available: {e}"))?;
         if r.status.success() { loaded = true; break; }
+        why = format!("{}{}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr)).split_whitespace().collect::<Vec<_>>().join(" ");
     }
     let _ = Command::new("umount").arg(mnt).status();
-    if !loaded { return Err("The installed system could not be loaded (kexec failed).".into()); }
+    if !loaded { return Err(format!("The installed system could not be loaded (kexec: {}).", why.chars().take(160).collect::<String>())); }
     let _ = Command::new("sync").status();
     let r = Command::new("kexec").arg("-e").output().map_err(|e| e.to_string())?;
     Err(format!("Could not jump into the installed system: {}", String::from_utf8_lossy(&r.stderr).trim()))
@@ -102,7 +104,7 @@ impl Existing {
     }
 
     pub fn state_line(&self) -> String {
-        format!("EXEC85_STATE page=existing disk={} countdown={} msg={}", self.found.disk, self.remaining.map_or("stopped".to_string(), |n| n.to_string()), self.msg.as_deref().map_or("-".to_string(), |m| m.chars().take(50).collect::<String>().replace(' ', "_")))
+        format!("EXEC85_STATE page=existing disk={} countdown={} msg={}", self.found.disk, self.remaining.map_or("stopped".to_string(), |n| n.to_string()), self.msg.as_deref().map_or("-".to_string(), |m| m.chars().take(200).collect::<String>().replace(' ', "_")))
     }
 }
 

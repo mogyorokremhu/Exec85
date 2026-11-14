@@ -6,6 +6,7 @@
 use crate::keys::Key;
 use crate::layout::Rect;
 use crate::paint::Painter;
+pub mod browser;
 pub mod calculator;
 pub mod catalog;
 pub mod clock;
@@ -28,12 +29,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft, DiscordBot, Remote, Catalog }
+pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft, DiscordBot, Remote, Catalog, Browser }
 
 impl Kind {
     /// The app a shortcut file names ("app:terminal").
     pub fn parse(name: &str) -> Option<Kind> {
-        [Kind::Notepad, Kind::Terminal, Kind::Paint, Kind::Monitor, Kind::DiskUsage, Kind::Network, Kind::Clock, Kind::Calculator, Kind::Reversi, Kind::Snake, Kind::Services, Kind::Software, Kind::Minecraft, Kind::DiscordBot, Kind::Remote, Kind::Catalog]
+        [Kind::Notepad, Kind::Terminal, Kind::Paint, Kind::Monitor, Kind::DiskUsage, Kind::Network, Kind::Clock, Kind::Calculator, Kind::Reversi, Kind::Snake, Kind::Services, Kind::Software, Kind::Minecraft, Kind::DiscordBot, Kind::Remote, Kind::Catalog, Kind::Browser]
             .into_iter().find(|k| k.name() == name)
     }
 
@@ -41,7 +42,7 @@ impl Kind {
         match self {
             Kind::Notepad => "notepad", Kind::Terminal => "terminal", Kind::Paint => "paint", Kind::Monitor => "monitor",
             Kind::DiskUsage => "diskusage", Kind::Network => "network", Kind::Clock => "clock",
-            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft", Kind::DiscordBot => "discordbot", Kind::Remote => "remote", Kind::Catalog => "catalog",
+            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft", Kind::DiscordBot => "discordbot", Kind::Remote => "remote", Kind::Catalog => "catalog", Kind::Browser => "browser",
         }
     }
 }
@@ -101,6 +102,7 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Paint => Box::new(paint::Paint::new(env)),
         Kind::Monitor => Box::new(monitor::Monitor::new()),
         Kind::Catalog => Box::new(catalog::Catalog::new(helper_backend())),
+        Kind::Browser => Box::new(browser::Browser::new(browser::web_backend(crate::homedirs::downloads_dir(&env.home)), helper_backend())),
         Kind::Remote => Box::new(remote::Remote::new(helper_backend())),
         Kind::DiscordBot => Box::new(discordbot::DiscordBot::new(helper_backend())),
         Kind::Minecraft => Box::new(minecraft::Minecraft::new(helper_backend(), minecraft::Minecraft::system_memory_kb())),

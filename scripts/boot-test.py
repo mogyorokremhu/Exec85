@@ -384,7 +384,7 @@ def scenario_install():
         vm.stop()
 
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote"]
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser"]
 
 SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}
@@ -745,6 +745,13 @@ def scenario_testing():
                 raise
             terminal_run(vm, f"ls -l /srv/bots/{name}/.env | cut -c1-10", "-rw-------", 30, f"bot: the {lang} bot's token file is private")
             terminal_run(vm, f"svc stop {name}; echo S{tag}$((5-3))", f"S{tag}2", 60, f"bot: the {lang} bot can be stopped")
+
+        # The browser: the allowed list, a real page from an allowed site, and a refusal for the rest
+        terminal_run(vm, "sites list | grep -c alpinelinux.org; echo B$((5-3))", "re:[1-9]\\d*\\s*B2", 30, "browser: the allowed list is installed")
+        terminal_run(vm, "browse https://example.com/ 2>&1 | grep -c 'not on the list'; echo B$((6-3))", "re:[1-9]\\d*\\s*B3", 60, "browser: a site that is not allowed is refused")
+        terminal_run(vm, "browse https://alpinelinux.org/ 2>&1 | grep -ci alpine; echo B$((7-3))", "re:[1-9]\\d*\\s*B4", 90, "browser: a real page from an allowed site is read (secure connection, redirect, layout)")
+        terminal_run(vm, "sites add example.com; browse https://example.com/ 2>&1 | grep -c 'Example Domain'; echo B$((8-3))", "re:[1-9]\\d*\\s*B5", 90, "browser: after allowing a site it opens")
+        terminal_run(vm, "sites remove example.com; browse https://example.com/ 2>&1 | grep -c 'not on the list'; echo B$((9-3))", "re:[1-9]\\d*\\s*B6", 60, "browser: and is refused again after removing it")
 
         # Home folders and the Desktop shortcuts
         terminal_run(vm, "ls -d ~/Desktop ~/Documents ~/Downloads ~/Music ~/Pictures ~/Videos | wc -l; echo H$((5-3))", "re:6\\s*H2", 30, "home: the six standard folders exist")
