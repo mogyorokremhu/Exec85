@@ -250,6 +250,11 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
         "mc-status" => crate::mc::server_status(ctx, arg(1)?),
         "mc-list" => Ok(crate::mc::list(ctx)),
+        "tunnel-status" => Ok(crate::tunnel::status(ctx)),
+        "tunnel-install" => crate::tunnel::install(ctx),
+        "tunnel-claim" => crate::tunnel::claim(ctx),
+        "tunnel-reset" => crate::tunnel::reset(ctx),
+        "tunnel-remove" => crate::tunnel::remove(ctx),
         "mc-cmd" => crate::mc::send_command(ctx, arg(1)?, &w[2..].join(" ")),
         "mc-console" => crate::mc::enable_console(ctx, arg(1)?),
         "log-list" => {
@@ -583,6 +588,8 @@ pub fn cli(args: &[String]) -> i32 {
         ["--health"] => { let be: crate::apps::Backend = std::sync::Arc::new(|w: &[String]| { let r: Vec<&str> = w.iter().map(String::as_str).collect(); call(&r) }); crate::apps::health::report(&be, &mut std::io::stdout()); 0 }
         ["--logs"] => show(call(&["log-list"])),
         ["--logs", name] => show(call(&["log-tail", name, "40"])),
+        ["--tunnel"] | ["--tunnel", "status"] => show(call(&["tunnel-status"])),
+        ["--tunnel", a @ ("install" | "claim" | "reset" | "remove")] => show(call(&[&format!("tunnel-{a}")])),
         ["--sites"] | ["--sites", "list"] => show(call(&["site-list"])),
         ["--sites", "add", d] => show(call(&["site-add", d])),
         ["--sites", "remove", d] => show(call(&["site-remove", d])),

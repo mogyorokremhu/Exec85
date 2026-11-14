@@ -384,7 +384,7 @@ def scenario_install():
         vm.stop()
 
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs"]
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel"]
 
 SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}
@@ -774,6 +774,17 @@ def scenario_testing():
         terminal_run(vm, "logs craft | wc -l; echo G$((7-3))", "re:[1-9]\\d*\\s*G4", 30, "logs: a service's log can be read")
         terminal_run(vm, "health | grep -c 'Processor temperature'; echo G$((8-3))", "re:[1-9]\\d*\\s*G5", 60, "health: the report shows the processor temperature line")
         terminal_run(vm, "health | grep -c '^disk '; echo G$((9-3))", "re:\\d+\\s*G6", 60, "health: the report runs (a virtual machine has no SMART: it says so)")
+
+        # Internet tunnel (playit.gg): installed for real from the pinned GitHub release, runs, and gives a claim link
+        terminal_run(vm, "tunnel install > /tmp/t1.txt 2>&1; echo T$((5-3))", "T2", 600, "tunnel: the playit.gg agent installs (download checked against the pinned checksums)")
+        dump_file(vm, "/tmp/t1.txt", 3)
+        terminal_run(vm, "sleep 5; svc list | grep -c 'playit running'; echo T$((6-3))", "re:[1-9]\\d*\\s*T3", 60, "tunnel: the agent runs as a service")
+        try: terminal_run(vm, "tunnel claim > /tmp/t2.txt 2>&1; grep -c 'https://playit.gg/claim/' /tmp/t2.txt; echo T$((7-3))", "re:[1-9]\\d*\\s*T4", 120, "tunnel: playit.gg gives a claim link")
+        except AssertionError:
+            dump_file(vm, "/tmp/t2.txt", 4); terminal_run(vm, "svc log playit | tail -2 | cut -c1-66; echo T$((8-3))", "re:T5", 30, "diagnostic"); print("DIAG-tunnel>", app_line(vm, "terminal", 1), flush=True)
+            raise
+        terminal_run(vm, "tunnel status | grep -c 'installed=yes'; echo T$((9-3))", "re:[1-9]\\d*\\s*T6", 60, "tunnel: the status says installed and not yet claimed")
+        terminal_run(vm, "tunnel remove > /dev/null 2>&1; tunnel status | grep -c 'installed=no'; echo T$((10-3))", "re:[1-9]\\d*\\s*T7", 60, "tunnel: it can be removed again")
 
         # Home folders and the Desktop shortcuts
         try: terminal_run(vm, "ls -d /home/tester/Desktop /home/tester/Documents /home/tester/Downloads /home/tester/Music /home/tester/Pictures /home/tester/Videos | wc -l; echo H$((5-3))", "re:6\\s*H2", 30, "home: the six standard folders exist")
