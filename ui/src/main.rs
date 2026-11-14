@@ -213,6 +213,46 @@ fn stage_splash() -> ! {
     }
 }
 
+/// Run by the install disc's first process before anything else starts: is Exec85 already installed? Then offer to start it
+/// (by itself after a few seconds). Exits with EXIT_START_INSTALLED to start it, 0 to carry on with the installer.
+fn stage_existing() -> ! {
+    load_layout();
+    let Some(found) = existing::find(&disks::system_disks(), Path::new("/dev")) else { std::process::exit(0) };
+    let mut s = None;
+    for _ in 0..50 { match Screen::try_open() { Ok(x) => { s = Some(x); break; } Err(_) => thread::sleep(Duration::from_millis(100)) } }
+    let Some(mut s) = s else { log("EXEC85_INSTALLER no display for the existing-install question"); std::process::exit(0) };
+    let (cols, rows) = s.cells();
+    let (tx, rx) = channel::<Event>();
+    let key_tx = tx.clone();
+    input::spawn_with(Arc::new(move |k| key_tx.send(Event::Key(k)).is_ok()));
+    let mut ex = existing::Existing::new(cols, rows, system_mode(), found.clone());
+    existing::draw(&ex, &mut s.canvas, &s.m);
+    s.show();
+    announce("existing", &s);
+    log(&ex.state_line());
+    let mut last_line = ex.state_line();
+    loop {
+        let outcome = match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(Event::Key(k)) => ex.handle(k),
+            Ok(Event::Wake) => None,
+            Err(RecvTimeoutError::Timeout) => ex.tick(),
+            Err(RecvTimeoutError::Disconnected) => loop { thread::sleep(Duration::from_secs(3600)); },
+        };
+        match outcome {
+            Some(existing::Outcome::Reinstall) => std::process::exit(0),
+            Some(existing::Outcome::Start) => match existing::write_handoff(&found) {
+                Ok(()) => { log("EXEC85_INSTALLER starting the installed system"); std::process::exit(existing::EXIT_START_INSTALLED) }
+                Err(m) => { ex.msg = Some(m); ex.remaining = None; }
+            },
+            None => {}
+        }
+        existing::draw(&ex, &mut s.canvas, &s.m);
+        s.show();
+        let line = ex.state_line();
+        if line != last_line { log(&line); last_line = line; }
+    }
+}
+
 fn stage_installer() -> ! {
     load_layout();
     let mut s = Screen::open();
@@ -225,38 +265,6 @@ fn stage_installer() -> ! {
         let tx = run_tx.clone();
         thread::spawn(move || install::run_to_shared(cfg, install::Paths::live(), shared, move || { let _ = tx.send(Event::Wake); }));
     });
-    // Already installed? Then offer to start that (and do so by itself after a few seconds) instead of the installer.
-    // The install disc being left in the drive must not mean installing again and again.
-    if !supervisor::cmdline_has("exec85.reinstall") {
-        if let Some(found) = existing::find(&disks::system_disks(), Path::new("/dev")) {
-            let mut ex = existing::Existing::new(cols, rows, system_mode(), found.clone());
-            existing::draw(&ex, &mut s.canvas, &s.m);
-            s.show();
-            announce("installer", &s);
-            log(&ex.state_line());
-            let mut last_line = ex.state_line();
-            loop {
-                let outcome = match rx.recv_timeout(Duration::from_secs(1)) {
-                    Ok(Event::Key(k)) => ex.handle(k),
-                    Ok(Event::Wake) => None,
-                    Err(RecvTimeoutError::Timeout) => ex.tick(),
-                    Err(RecvTimeoutError::Disconnected) => loop { thread::sleep(Duration::from_secs(3600)); },
-                };
-                match outcome {
-                    Some(existing::Outcome::Reinstall) => break,
-                    Some(existing::Outcome::Start) => {
-                        log("EXEC85_INSTALLER starting the installed system");
-                        if let Err(m) = existing::start(&found) { ex.msg = Some(m); ex.remaining = None; }
-                    }
-                    None => {}
-                }
-                existing::draw(&ex, &mut s.canvas, &s.m);
-                s.show();
-                let line = ex.state_line();
-                if line != last_line { log(&line); last_line = line; }
-            }
-        }
-    }
     // TESTING-ONLY: the testing build is started with "exec85.testing" on the kernel command line.
     let testing = supervisor::cmdline_has("exec85.testing");
     let mut inst = installer::Installer::new(cols, rows, system_mode(), installer::load_timezones(Path::new("/usr/share/zoneinfo")), testing, Box::new(disks::system_disks), runner);
@@ -420,6 +428,7 @@ fn main() {
         Some("--ppm") => render_to_file(&args[1..]),
         Some("--splash") => stage_splash(),
         Some("--installer") => stage_installer(),
+        Some("--existing") => stage_existing(),
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
         Some("--helperd") => helper::serve(),

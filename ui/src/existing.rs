@@ -2,7 +2,7 @@
 //!
 //! When the install disc (or the virtual CD) is still in the drive, the computer starts the installer again and again.
 //! So the installer first looks for an Exec85 on the disks: if there is one, it offers to start it, and does so by itself
-//! after a few seconds. "Starting" means switching from the disc's system to the installed one without a reboot (see `start`),
+//! after a few seconds. "Starting" means switching from the disc's system to the installed one without a reboot (see `write_handoff`),
 //! so the boot order of the computer does not matter. Reinstalling (which erases the disk) is a deliberate second choice.
 use crate::disks::{self, Disk};
 use crate::gfx::{Canvas, Metrics, Mode, Theme};
@@ -12,7 +12,6 @@ use crate::paint::Painter;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::process::Command;
 
 pub const COUNTDOWN_SECS: u32 = 10;
 pub const ROOT_LABEL: &str = "exec85";
@@ -49,23 +48,16 @@ pub fn find(disks_list: &[Disk], dev_dir: &Path) -> Option<Found> {
     None
 }
 
-/// Hand the computer over to the installed system, without rebooting (so the computer's boot order does not matter).
-/// The disc's init process (BusyBox `init`) is told to "restart" (signal QUIT): it stops the live system, then runs
-/// `/etc/exec85/handoff.sh` in its own place, which mounts the installed disk and switches to its init (`switch_root`).
-/// This only returns, with a message, when the hand-over did not happen.
-pub fn start(f: &Found) -> Result<(), String> {
+/// Note which disk to start. The disc's first process (`/etc/exec85/live-init`, which is PID 1) reads it after this
+/// program exits with `EXIT_START_INSTALLED`, mounts that disk and switches to its init (`switch_root`), without a reboot.
+pub fn write_handoff(f: &Found) -> Result<(), String> {
     if !f.root_dev.starts_with("/dev/") || f.root_dev.contains("..") || f.root_dev.chars().any(|c| c.is_whitespace()) { return Err("That is not a disk I can start from.".into()); }
-    if !Path::new(HANDOFF_SCRIPT).exists() { return Err("This disc cannot hand over to the installed system (the hand-over script is missing).".into()); }
-    // The note for the script goes into the memory disk's top folder: it is not unmounted while the live system stops.
-    std::fs::write("/handoff-root", format!("{}\n", f.root_dev)).map_err(|e| format!("Could not prepare the hand-over: {e}"))?;
-    let _ = Command::new("sync").status();
-    if let Err(e) = crate::sys::send_signal(1, 3) { return Err(format!("Could not ask the system to hand over: {e}")); }
-    // If it works this process is stopped within a few seconds. If not, say so instead of waiting forever.
-    std::thread::sleep(std::time::Duration::from_secs(40));
-    Err("The hand-over to the installed system did not happen. Restart the computer with the disc removed.".into())
+    std::fs::write(HANDOFF_FILE, format!("{}\n", f.root_dev)).map_err(|e| format!("Could not prepare the hand-over: {e}"))
 }
 
-pub const HANDOFF_SCRIPT: &str = "/etc/exec85/handoff.sh";
+pub const HANDOFF_FILE: &str = "/handoff-root";
+/// Exit code of `exec85 --existing` that means "start the installed system".
+pub const EXIT_START_INSTALLED: i32 = 10;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome { Start, Reinstall }
@@ -173,6 +165,14 @@ mod tests {
         assert_eq!(e.remaining, None);
         for _ in 0..30 { assert_eq!(e.tick(), None, "no more automatic start after a key"); }
         assert_eq!(e.handle(parse_key("enter").unwrap()), Some(Outcome::Start));
+    }
+
+    #[test]
+    fn only_a_plain_device_path_can_be_handed_over_to() {
+        for bad in ["sda3", "/dev/../etc", "/dev/sda3 ; reboot", "/etc/passwd", ""] {
+            let mut f = found(); f.root_dev = bad.into();
+            assert!(write_handoff(&f).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

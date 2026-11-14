@@ -1,6 +1,8 @@
 #!/bin/sh
 # Early boot: mount the virtual filesystems, set the host name, load drivers.
 # Kept as one small script (instead of many OpenRC services) so boot stays fast.
+# The install disc's first process (live-init) already ran this once.
+[ -e /.early-done ] && exit 0
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null

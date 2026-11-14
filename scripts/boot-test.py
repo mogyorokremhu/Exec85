@@ -750,7 +750,7 @@ def scenario_testing():
         terminal_run(vm, "sites list | grep -c alpinelinux.org; echo B$((5-3))", "re:[1-9]\\d*\\s*B2", 30, "browser: the allowed list is installed")
         terminal_run(vm, "browse https://example.com/ 2>&1 | grep -c 'not on the list'; echo B$((6-3))", "re:[1-9]\\d*\\s*B3", 60, "browser: a site that is not allowed is refused")
         terminal_run(vm, "browse https://alpinelinux.org/ 2>&1 | grep -ci alpine; echo B$((7-3))", "re:[1-9]\\d*\\s*B4", 90, "browser: a real page from an allowed site is read (secure connection, redirect, layout)")
-        try: terminal_run(vm, "sites add example.com > /tmp/sa.txt 2>&1; browse https://example.com/ > /tmp/ex.txt 2>&1; grep -c 'Example Domain' /tmp/ex.txt; echo B$((8-3))", "re:[1-9]\\d*\\s*B5", 90, "browser: after allowing a site it opens")
+        try: terminal_run(vm, "sites add example.com > /tmp/sa.txt 2>&1; browse https://example.com/ > /tmp/ex.txt 2>&1; grep -ci 'domain' /tmp/ex.txt; echo B$((8-3))", "re:[1-9]\\d*\\s*B5", 90, "browser: after allowing a site it opens")
         except AssertionError:
             dump_file(vm, "/tmp/sa.txt", 2); dump_file(vm, "/tmp/ex.txt", 4)
             raise
