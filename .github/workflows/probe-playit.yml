@@ -24,9 +24,21 @@ jobs:
             done
           done
           ls -lR; file */* || true
-      - name: Options and first start on Alpine
+      - name: The two programs together (v2.0.2), on Alpine
         run: |
-          for f in p/*/*; do
-            echo "=================== $f"
-            docker run --rm -v "$PWD/p":/p -e HOME=/tmp/h alpine:3.22 sh -c "echo '--- version'; /$f --version 2>&1 | head -5; echo '--- help'; /$f --help 2>&1 | head -60; echo '--- first start, 25 s, no terminal'; timeout 25 /$f 2>&1 | head -40; echo '--- exit'; ls -laR /tmp/h /etc/playit 2>/dev/null | head -20" || true
-          done
+          docker run --rm -v "$PWD/p/v2.0.2":/p -e HOME=/tmp/h alpine:3.22 sh -c '
+            cd /tmp && cp /p/playit-linux-amd64 playitd && cp /p/playit-cli-linux-amd64 playit && chmod +x playitd playit
+            ./playitd --socket-path /tmp/p.sock --secret-path /tmp/p.toml --log-path /tmp/d.log > /tmp/d.out 2>&1 &
+            sleep 3
+            echo "--- claim --help"; ./playit --socket-path /tmp/p.sock claim --help 2>&1 | head -30
+            echo "--- setup --help"; ./playit --socket-path /tmp/p.sock setup --help 2>&1 | head -30
+            echo "--- status"; ./playit --socket-path /tmp/p.sock status 2>&1 | head -20
+            echo "--- secret-path"; ./playit --socket-path /tmp/p.sock secret-path 2>&1 | head
+            echo "--- claim (no terminal), 20 s"; timeout 20 ./playit --socket-path /tmp/p.sock claim 2>&1 | head -40
+            echo "--- setup (no terminal), 20 s"; timeout 20 ./playit --socket-path /tmp/p.sock setup 2>&1 | head -40
+            echo "--- daemon output"; cat /tmp/d.out | head -30; echo "--- daemon log"; cat /tmp/d.log 2>/dev/null | head -30
+          ' || true
+      - name: The older single program (v1.2.0), on Alpine
+        run: |
+          mkdir -p q && curl -fsSL -o q/playit https://github.com/playit-cloud/playit-agent/releases/download/v1.2.0/playit-linux-amd64 && chmod +x q/playit
+          docker run --rm -v "$PWD/q":/q -e HOME=/tmp/h alpine:3.22 sh -c 'echo "--- help"; /q/playit --help 2>&1 | head -40; echo "--- first start, 20 s, no terminal"; timeout 20 /q/playit 2>&1 | head -30; ls -laR /tmp/h 2>/dev/null | head' || true
