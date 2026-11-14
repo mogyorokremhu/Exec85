@@ -403,9 +403,13 @@ Syncthing, Forgejo, ad blocker, media server.
 Honest note: this was a lot, so the rest moved to a **v0.8.5** release rather than being rushed:
 **v0.8.5 - "the rest of everyday"** *(moved from v0.8.0)*: file sharing (Samba), PostgreSQL / MariaDB, print server (CUPS), the extra game servers (Terraria, Factorio, Valheim, Bedrock), `exec85.local`, disk health and temperature, scheduled backups, user management, scheduled tasks, log viewer.
 
-**v0.9.0 - "reach it from anywhere"**: Git server (Forgejo), **WireGuard** VPN, **Wake-on-LAN**, **dynamic DNS** (DuckDNS), **reverse proxy with HTTPS** (Caddy), the ad blocker (DNS blocker), the media server (Navidrome + MiniDLNA), Home Assistant (with a clear memory warning).
+**v0.9.0 - "fixes, home folders and a browser"** (released): the install disc starts an installed system by itself instead of installing again; music distortion fixed; Minecraft status from the log and a memory warning; home folders (Documents, Downloads, Music, Pictures, Videos, Desktop with shortcuts); the **browser** with its own page reader and an allowed-sites list; file sharing (Samba), the local name (`NAME.local`), disk health and temperature, and the log viewer.
 
-**v0.10.0 - "look after itself"**: **web dashboard**, **automatic updates** (software and Exec85 itself, with a fallback boot entry), the **uptime monitor with alerts** (Discord webhook / ntfy), **Vaultwarden**.
+**v0.9.5 - "the rest of everyday"** *(moved from v0.8.0/v0.9.0)*: PostgreSQL / MariaDB, the print server (CUPS), the extra game servers (Terraria, Factorio, Valheim, Bedrock), scheduled backups, user management, scheduled tasks.
+
+**v0.10.0 - "reach it from anywhere"**: Git server (Forgejo), **WireGuard** VPN, **Wake-on-LAN**, **dynamic DNS** (DuckDNS), **reverse proxy with HTTPS** (Caddy), the ad blocker (DNS blocker), the media server (Navidrome + MiniDLNA), Home Assistant (with a clear memory warning).
+
+**v0.11.0 - "look after itself"**: **web dashboard**, **automatic updates** (software and Exec85 itself, with a fallback boot entry), the **uptime monitor with alerts** (Discord webhook / ntfy), **Vaultwarden**.
 
 **Whenever the laptop arrives**: real-hardware testing (drivers, Wi-Fi, 4 TB GPT disk, lid-close, real numbers), the Debian comparison.
 

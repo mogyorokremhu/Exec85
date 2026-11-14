@@ -30,6 +30,8 @@ pub fn console_line(line: &str) {
 }
 
 pub fn cmdline_has(word: &str) -> bool {
+    // After a hand-over from the install disc the kernel command line still says "live", but this is the installed system.
+    if word == "exec85.live" && Path::new("/etc/exec85/handed-over").exists() { return false; }
     std::fs::read_to_string("/proc/cmdline").map_or(false, |s| s.split_whitespace().any(|w| w == word))
 }
 
@@ -42,7 +44,7 @@ pub fn stage(exe: &Path, arg: &str, as_user: Option<&User>, start_dir: Option<&s
     match as_user {
         Some(u) => {
             cmd.env("HOME", &u.home).env("USER", &u.name).env("LOGNAME", &u.name).env("SHELL", &u.shell);
-            if Path::new(&u.home).is_dir() { cmd.current_dir(&u.home); }
+            if Path::new(&u.home).is_dir() { let _ = crate::homedirs::ensure(Path::new(&u.home), u.uid, u.gid); cmd.current_dir(&u.home); }
             if start_dir.is_none() { cmd.env("EXEC85_START", &u.home); }
             let (uid, gid) = (u.uid, u.gid);
             let groups = account::group_ids(Path::new("/"), u);

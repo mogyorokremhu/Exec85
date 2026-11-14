@@ -160,6 +160,58 @@ pub fn valid_version_id(v: &str) -> bool { !v.is_empty() && v.len() <= 40 && v.c
 /// 2, 4 or 8 GB, and only if the computer has room for it (a bit more than the heap is used in total).
 pub fn ram_choices(total_kb: u64) -> Vec<u32> { [2u32, 4, 8].into_iter().filter(|g| total_kb >= *g as u64 * 1024 * 1024 * 5 / 4).collect() }
 
+// ---- what is the server doing? (read from its own log) ---------------------------------------
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Status { pub state: &'static str, pub detail: String }
+
+/// `state` is one of: starting, loading, running, stopped, failed. The newest line that says something decides.
+pub fn log_status(log: &str) -> Status {
+    let mut st = Status { state: "stopped", detail: "No server output yet.".into() };
+    for l in log.lines() {
+        let lower = l.to_lowercase();
+        let set = |st: &mut Status, state: &'static str, d: &str| { st.state = state; st.detail = d.to_string(); };
+        if l.contains("Starting minecraft server version") { set(&mut st, "starting", "Starting Minecraft."); }
+        else if l.contains("Loading libraries") || l.contains("Loading properties") || l.contains("Preparing level") { set(&mut st, "loading", "Loading the world."); }
+        else if let Some(i) = l.find("Preparing spawn area: ") {
+            let pct: String = l[i + 22..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            set(&mut st, "loading", &format!("Preparing the spawn area ({pct}%)."));
+        }
+        else if l.contains("Done (") && l.contains("For help, type") { set(&mut st, "running", "Running: players can connect."); }
+        else if l.contains("Stopping server") || l.contains("Stopping the server") { set(&mut st, "stopped", "The server stopped."); }
+        else if l.contains("You need to agree to the EULA") { set(&mut st, "failed", "The EULA has not been accepted, so the server stopped."); }
+        else if lower.contains("outofmemoryerror") || lower.contains("cannot allocate memory") || lower.contains("insufficient memory") || lower.contains("could not reserve enough space") || l.trim() == "Killed" {
+            set(&mut st, "failed", "Out of memory: the server needs more than this computer can spare. Choose less memory for it, or stop other things.");
+        }
+        else if l.contains("Could not create the Java Virtual Machine") { set(&mut st, "failed", "Java could not start (usually: not enough memory)."); }
+        else if lower.contains("address already in use") || lower.contains("failed to bind to port") { set(&mut st, "failed", "Port 25565 is already used by something else."); }
+        else if l.contains("UnsupportedClassVersionError") { set(&mut st, "failed", "This server needs a newer Java than the one installed."); }
+    }
+    st
+}
+
+/// "running Running: players can connect." (read from the end of the server's log)
+pub fn server_status(ctx: &Ctx, name: &str) -> Result<String, String> {
+    services::valid_name(name).map_err(String::from)?;
+    let text = std::fs::read_to_string(ctx.root.join("var/log/exec85").join(format!("{name}.log"))).unwrap_or_default();
+    let tail: Vec<&str> = text.lines().rev().take(400).collect();
+    let st = log_status(&tail.into_iter().rev().collect::<Vec<_>>().join("\n"));
+    Ok(format!("{} {}", st.state, st.detail))
+}
+
+pub fn mem_available_kb() -> u64 {
+    std::fs::read_to_string("/proc/meminfo").unwrap_or_default().lines().find(|l| l.starts_with("MemAvailable:")).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+/// A warning when the chosen memory does not fit into what is free right now (the live disc keeps its files in memory,
+/// and Java needs its heap plus a few hundred MB for itself). None when it fits, or when the free memory is unknown.
+pub fn memory_warning(avail_kb: u64, ram_gb: u32) -> Option<String> {
+    if avail_kb == 0 { return None; }
+    let need_kb = ram_gb as u64 * 1024 * 1024 + 400 * 1024;
+    if avail_kb >= need_kb { return None; }
+    Some(format!("Only {:.1} GB of memory is free right now, and {} GB for the server plus Java's own needs about {:.1} GB. The server may be killed or take very long to start: choose less memory, or install Exec85 to the disk first (the live disc keeps its files in memory).", avail_kb as f64 / 1_048_576.0, ram_gb, need_kb as f64 / 1_048_576.0))
+}
+
 pub fn eula_text(accepted: bool) -> String {
     format!("#By changing the setting below to TRUE you are indicating your agreement to our EULA (https://aka.ms/MinecraftEULA).\neula={}\n", accepted)
 }
@@ -404,7 +456,8 @@ pub fn create(ctx: &Ctx, c: &Create) -> Result<String, String> {
     crate::helper::handle(ctx, &["svc-save".to_string(), services::render_conf(&def)])?;
     if c.eula {
         crate::helper::handle(ctx, &["svc-start".to_string(), c.name.to_string()])?;
-        Ok(format!("{} {} is installed and starting (it takes a minute). Players connect to this computer's address on port 25565.", c.kind.label(), c.version))
+        let warn = memory_warning(mem_available_kb(), c.ram_gb).map(|w| format!(" WARNING: {w}")).unwrap_or_default();
+        Ok(format!("{} {} is installed and starting (it takes a minute). Players connect to this computer's address on port 25565.{warn}", c.kind.label(), c.version))
     } else {
         Ok(format!("{} {} is installed but will not start until the EULA is accepted: run it again with the EULA accepted, or set eula=true in /srv/minecraft/{}/eula.txt.", c.kind.label(), c.version, c.name))
     }
@@ -415,6 +468,42 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::path::PathBuf;
+
+    #[test]
+    fn the_log_tells_what_the_server_is_doing() {
+        assert_eq!(log_status("").state, "stopped");
+        assert_eq!(log_status("[10:00:01] [main/INFO]: Starting minecraft server version 1.21.5").state, "starting");
+        let loading = "Starting minecraft server version 1.21.5\n[main/INFO]: Preparing level \"world\"\n[Worker-Main-1/INFO]: Preparing spawn area: 43%\n";
+        let st = log_status(loading); assert_eq!(st.state, "loading"); assert!(st.detail.contains("43%"), "{}", st.detail);
+        let done = format!("{loading}[Server thread/INFO]: Done (12.3s)! For help, type \"help\"\n");
+        assert_eq!(log_status(&done).state, "running");
+        assert_eq!(log_status(&format!("{done}[Server thread/INFO]: Stopping server\n")).state, "stopped", "the newest line wins");
+        assert_eq!(log_status("[ServerMain/WARN]: You need to agree to the EULA in order to run the server.").state, "failed");
+        for oom in ["java.lang.OutOfMemoryError: Java heap space", "Error: Could not create the Java Virtual Machine.", "Killed", "There is insufficient memory for the Java Runtime Environment"] {
+            assert_eq!(log_status(&format!("Starting minecraft server version 1.21.5\n{oom}\n")).state, "failed", "{oom}");
+        }
+        assert!(log_status("Failed to bind to port 25565\nAddress already in use").detail.contains("25565"));
+    }
+
+    #[test]
+    fn server_status_reads_the_services_log() {
+        let r = world("status", 1_000_000);
+        std::fs::create_dir_all(r.join("var/log/exec85")).unwrap();
+        assert!(server_status(&Ctx { root: &r, runner: &fake(GOOD_SHA) }, "mc").unwrap().starts_with("stopped"), "no log yet");
+        std::fs::write(r.join("var/log/exec85/mc.log"), "Starting minecraft server version 1.21.5\nPreparing spawn area: 80%\n").unwrap();
+        assert!(server_status(&Ctx { root: &r, runner: &fake(GOOD_SHA) }, "mc").unwrap().starts_with("loading Preparing the spawn area (80%)"));
+        assert!(server_status(&Ctx { root: &r, runner: &fake(GOOD_SHA) }, "../x").is_err());
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn a_choice_that_does_not_fit_the_free_memory_is_warned_about() {
+        let gb = 1024 * 1024u64;
+        assert!(memory_warning(8 * gb, 4).is_none());
+        assert!(memory_warning(0, 4).is_none(), "unknown free memory: no warning");
+        let w = memory_warning(3 * gb, 4).unwrap();
+        assert!(w.contains("3.0 GB") && w.contains("choose less memory"), "{w}");
+    }
 
     #[test]
     fn json_reader_handles_the_shapes_mojang_uses() {

@@ -247,6 +247,41 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "ssh-disable" => crate::ssh::disable(ctx),
         "ssh-addkey" => crate::ssh::add_key(ctx, arg(1)?, arg(2)?),
         "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
+        "mc-status" => crate::mc::server_status(ctx, arg(1)?),
+        "log-list" => {
+            let mut v = vec!["kernel".to_string()];
+            if ctx.root.join("var/log/messages").exists() { v.push("messages".into()); }
+            if let Ok(rd) = std::fs::read_dir(ctx.root.join("var/log/exec85")) { let mut n: Vec<String> = rd.flatten().filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".log").map(String::from)).filter(|n| services::valid_name(n).is_ok()).collect(); n.sort(); v.extend(n); }
+            Ok(v.join("\n"))
+        }
+        "log-tail" => {
+            let name = arg(1)?;
+            let n: usize = arg(2).ok().and_then(|s| s.parse().ok()).unwrap_or(200).clamp(1, 2000);
+            let cut = |t: String| t.lines().map(|l| l.chars().take(300).collect::<String>()).collect::<Vec<_>>().join("\n");
+            if name == "kernel" { let (_c, out) = ctx.runner.run("dmesg", &[]); let l: Vec<&str> = out.lines().collect(); return Ok(cut(l[l.len().saturating_sub(n)..].join("\n"))); }
+            if name == "messages" { return Ok(cut(tail(&ctx.root.join("var/log/messages"), n))); }
+            services::valid_name(name).map_err(String::from)?;
+            let path = ctx.root.join("var/log/exec85").join(format!("{name}.log"));
+            if !path.exists() { return Err("There is no such log.".into()); }
+            Ok(cut(tail(&path, n)))
+        }
+        "disk-health" => {
+            let d = arg(1)?;
+            if d.is_empty() || d.len() > 20 || !d.chars().all(|c| c.is_ascii_alphanumeric()) || SKIP_DISK_PREFIXES.iter().any(|p| d.starts_with(p)) { return Err("Not a disk name.".into()); }
+            let (_c, out) = ctx.runner.run("smartctl", &["-H", "-A", &format!("/dev/{d}")]);
+            Ok(out.lines().take(120).collect::<Vec<_>>().join("\n"))
+        }
+        "site-list" => Ok(crate::web::parse_allow(&std::fs::read_to_string(ctx.root.join("etc/exec85/sites.allow")).unwrap_or_default()).join("\n")),
+        "site-add" | "site-remove" => {
+            let add = w[0] == "site-add";
+            let path = ctx.root.join("etc/exec85/sites.allow");
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let new = crate::web::edit_allow(&text, arg(1)?, add)?;
+            if let Some(dir) = path.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
+            std::fs::write(&path, new).map_err(|e| e.to_string())?;
+            { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)); }
+            Ok(format!("{} is now {}.", arg(1)?.to_ascii_lowercase(), if add { "allowed" } else { "no longer allowed" }))
+        }
         "net-set" => {
             let name = arg(1)?;
             let mode = match arg(2)? {
@@ -459,6 +494,8 @@ pub fn serve() -> ! {
 }
 
 /// `exec85 --svc ...` and `exec85 --pkg ...`: the same actions as the apps, from a terminal.
+const SKIP_DISK_PREFIXES: [&str; 4] = ["loop", "ram", "sr", "zram"];
+
 pub fn cli(args: &[String]) -> i32 {
     let sub: Vec<&str> = args.iter().map(String::as_str).collect();
     // Output goes through write!, not println!: when the reader stops early (`... | head -1`) that is not an error worth crashing for.
@@ -524,6 +561,7 @@ pub fn cli(args: &[String]) -> i32 {
             show(call(&["ssh-addkey", &user, key]))
         }
         ["--mc", "accept", name] => show(call(&["mc-accept", name])),
+        ["--mc", "status", name] => show(call(&["mc-status", name])),
         ["--net", "set", name, mode, rest @ ..] => { let mut v = vec!["net-set", name, mode]; v.extend(rest.iter().copied()); show(call(&v)) }
         ["--net", "wifi", "scan", iface] => show(call(&["wifi-scan", iface])),
         ["--net", "wifi", "connect", iface, ssid] => { let pw = std::env::var("WIFI_PASSWORD").unwrap_or_default(); show(call(&["wifi-connect", iface, ssid, &pw])) }
@@ -532,6 +570,23 @@ pub fn cli(args: &[String]) -> i32 {
         ["--fw", on_off @ ("on" | "off")] => show(call(&["fw-enable", on_off])),
         ["--fw", "allow", name, port, rest @ ..] => { let scope = rest.first().copied().unwrap_or("local"); show(call(&["fw-allow", name, port, scope])) }
         ["--fw", "remove", name] => show(call(&["fw-remove", name])),
+        ["--health"] => { let be: crate::apps::Backend = std::sync::Arc::new(|w: &[String]| { let r: Vec<&str> = w.iter().map(String::as_str).collect(); call(&r) }); crate::apps::health::report(&be, &mut std::io::stdout()); 0 }
+        ["--logs"] => show(call(&["log-list"])),
+        ["--logs", name] => show(call(&["log-tail", name, "40"])),
+        ["--sites"] | ["--sites", "list"] => show(call(&["site-list"])),
+        ["--sites", "add", d] => show(call(&["site-add", d])),
+        ["--sites", "remove", d] => show(call(&["site-remove", d])),
+        ["--web", url, rest @ ..] => {
+            // Read a page as plain text (what the browser would show). Same rules: only allowed sites.
+            let width = rest.first().and_then(|w| w.parse::<usize>().ok()).unwrap_or(80).clamp(20, 200);
+            let list = crate::web::parse_allow(&std::fs::read_to_string(crate::web::ALLOW_FILE).unwrap_or_default());
+            match crate::web::navigate(&crate::web::Curl, &list, url) {
+                Ok(crate::web::Nav::Page { url, html }) => { let b = crate::web::parse_url(&url).unwrap(); let d = crate::web::render(&html, width, &b); for i in 0..d.lines.len() { let _ = writeln!(std::io::stdout(), "{}", d.line_text(i)); } 0 }
+                Ok(crate::web::Nav::Text { text, .. }) => { let _ = writeln!(std::io::stdout(), "{}", text.trim_end()); 0 }
+                Ok(crate::web::Nav::File { name, size, .. }) => { let _ = writeln!(std::io::stdout(), "This is a file: {name} ({}). Download it with the browser or: get ADDRESS", size.map_or("size unknown".to_string(), crate::web::human_size)); 0 }
+                Err(e) => { let _ = writeln!(std::io::stderr(), "error: {e}"); 1 }
+            }
+        }
         ["--usb", "eject", mount] => show(call(&["usb-eject", mount])),
         ["--pkg", a @ ("add" | "del"), pkgs @ ..] if !pkgs.is_empty() => { let mut v = vec![format!("apk-{a}")]; v.extend(pkgs.iter().map(|p| p.to_string())); let r: Vec<&str> = v.iter().map(String::as_str).collect(); show(call(&r)) }
         ["--pkg", "search", q] => show(call(&["apk-search", q])),

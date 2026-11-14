@@ -5,7 +5,7 @@ use crate::fs::{self as xfs, fmt_size, fmt_time, Drive, Sort};
 use std::io::Write;
 use std::path::Path;
 
-pub const COMMANDS: [(&str, &str); 10] = [
+pub const COMMANDS: [(&str, &str); 14] = [
     ("help", "this list"),
     ("dir", "list a folder with sizes and dates"),
     ("disk", "how full each drive is"),
@@ -13,6 +13,10 @@ pub const COMMANDS: [(&str, &str); 10] = [
     ("get", "download a file from the web"),
     ("svc", "services: svc list | add | start | stop | log"),
     ("pkg", "software: pkg search | add | del | update"),
+    ("browse", "read a web page as text: browse ADDRESS (allowed sites only)"),
+    ("health", "disk health (SMART) and temperatures"),
+    ("logs", "logs: logs (list) | logs NAME (newest lines, e.g. logs kernel)"),
+    ("sites", "allowed websites: sites list | sites add example.org | sites remove example.org"),
     ("fw", "firewall: fw status | fw allow NAME PORT/tcp [local|anywhere] | fw remove NAME | fw on|off"),
     ("bot", "Discord bot: read -s DISCORD_TOKEN; export DISCORD_TOKEN; bot create NAME python"),
     ("mc", "Minecraft server: mc versions | mc create NAME VERSION 2|4|8 --eula --type paper"),
@@ -120,7 +124,11 @@ pub fn file_name_from_url(url: &str) -> String {
 pub fn get(args: &[String], out: &mut dyn Write) -> i32 {
     let Some(url) = args.first() else { let _ = writeln!(out, "usage: get ADDRESS [file name]"); return 2 };
     if !(url.starts_with("http://") || url.starts_with("https://")) { let _ = writeln!(out, "{RED}get: the address must start with http:// or https://{OFF}"); return 2; }
-    let name = args.get(1).cloned().unwrap_or_else(|| file_name_from_url(url));
+    // With no name given the file goes into the Downloads folder (when there is one), under the name the address suggests.
+    let name = args.get(1).cloned().unwrap_or_else(|| {
+        let n = file_name_from_url(url);
+        match std::env::var_os("HOME").map(|h| crate::homedirs::downloads_dir(Path::new(&h))) { Some(d) if d.is_dir() => d.join(n).to_string_lossy().into_owned(), _ => n }
+    });
     if Path::new(&name).exists() { let _ = writeln!(out, "{RED}get: {name} already exists; give another name{OFF}"); return 1; }
     let _ = writeln!(out, "Downloading {BOLD}{name}{OFF} ...");
     let _ = out.flush();

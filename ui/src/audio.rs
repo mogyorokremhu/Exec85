@@ -17,9 +17,16 @@ pub fn sound_card_present() -> bool { std::fs::read_to_string("/proc/asound/card
 
 /// Unmute the usual outputs and set a comfortable volume (best effort: names differ between sound cards).
 pub fn unmute() {
+    // One fixed, moderate level every time (never "a bit more than last time"). Controls that sit one after the other on the same
+    // path multiply, so each is set to 70% and not to 100%: at full volume everywhere a quiet file still clips on some sound cards.
     for ctl in ["Master", "Speaker", "Headphone", "PCM", "Front", "Line Out"] {
-        let _ = Command::new("amixer").args(["-q", "-c", "0", "sset", ctl, "80%", "unmute"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        let _ = Command::new("amixer").args(["-q", "-c", "0", "sset", ctl, "70%", "unmute"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
     }
+}
+
+/// Two copies of the player playing at once sound like heavy distortion: make sure there is never more than one.
+fn stop_other_players() {
+    let _ = Command::new("pkill").args(["-x", "mpg123"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 pub struct Music { child: Child, paused: bool }
@@ -38,8 +45,10 @@ impl Music {
     pub fn start_default() -> Option<Music> {
         let (player, file) = (PathBuf::from(PLAYER), PathBuf::from(MUSIC_FILE));
         if !player.exists() || !file.exists() || !sound_card_present() { return None; }
+        stop_other_players();
         unmute();
-        Music::start(&player, &["-q", "--loop", "-1"], &file).ok()
+        // -b: a 4 MB read-ahead buffer, so a busy or virtual sound card does not run dry and crackle.
+        Music::start(&player, &["-q", "--loop", "-1", "-b", "4096"], &file).ok()
     }
 
     pub fn paused(&self) -> bool { self.paused }

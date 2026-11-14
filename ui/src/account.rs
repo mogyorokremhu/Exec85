@@ -156,6 +156,7 @@ pub fn add_user(root: &Path, name: &str, password: Option<&str>, extra_groups: &
     fs::create_dir_all(&home_dir)?;
     fs::set_permissions(&home_dir, fs::Permissions::from_mode(0o700))?;
     let _ = std::os::unix::fs::chown(&home_dir, Some(uid), Some(gid)); // fails harmlessly when not root (tests)
+    crate::homedirs::ensure(&home_dir, uid, gid)?;
     Ok(User { name: name.into(), uid, gid, home, shell: "/bin/ash".into() })
 }
 

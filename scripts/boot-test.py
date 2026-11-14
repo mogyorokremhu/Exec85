@@ -373,8 +373,18 @@ def scenario_install():
     finally:
         vm.stop()
 
+    # ---- fourth boot: the install disc is still in the drive. It must not install again: it finds the installed system and starts it ----
+    vm = VM("disc-left-in", cdrom=iso, disk=disk)
+    try:
+        r = vm.wait_for(r"EXEC85_STATE page=existing disk=(\w+) countdown=(\w+)", 600 if SLOW else 120)
+        step("disc left in: the installer notices the installed system", r is not None, "\n".join(vm.text().splitlines()[-20:]))
+        step("disc left in: it starts the installed system by itself and reaches the login screen", vm.wait_for(r"EXEC85_SCREEN login", 240 if SLOW else 90) is not None, "\n".join(vm.text().splitlines()[-25:]))
+        step("disc left in: the login screen is the installed one (host name from the installation)", vm.wait_for(r"EXEC85_LOGIN [^\n]*host=lab85", 20) is not None)
+    finally:
+        vm.stop()
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote"]
+
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs"]
 
 SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}
@@ -543,6 +553,12 @@ def scenario_testing():
         # ---- pendrives: plug in, browse, write, eject, pull out ----
         vm.monitor("device_add usb-storage,drive=usbd,id=usbdev,bus=xhci.0")
         m = vm.wait_for(r"EXEC85_USB added dev=(\S+) fs=vfat label=TESTUSB mount=(\S+)", 90)
+        if m is None:
+            open_app(vm, 1)    # the Terminal, to look around
+            for tag, cmd in (("block", "ls /sys/block | tr '\\n' ' '"), ("usbmods", "lsmod | grep -E 'xhci|usb_storage|uas|sd_mod' | cut -d' ' -f1 | tr '\\n' ' '"), ("gfx", "lsmod | grep -E 'bochs|drm|simpledrm' | cut -d' ' -f1 | tr '\\n' ' '; ls /dev/dri | tr '\\n' ' '"), ("nmods", "lsmod | wc -l"), ("hot", "cat /proc/sys/kernel/hotplug; ls /dev | grep -c '^sd'")):
+                try: terminal_run(vm, f"{cmd}; echo U$((5-3))", "re:U2", 20, "diagnostic")
+                except AssertionError: pass
+                print(f"DIAG-{tag}>", (app_line(vm, "terminal", 1) or {}), flush=True)
         step("usb: the plugged-in pendrive is detected and mounted", m is not None, "\n".join(l for l in vm.text().splitlines() if "EXEC85_USB" in l))
         mount = m[2]
         d = vm.wait_line("EXEC85_STATE", lambda d: "TESTUSB" in d.get("drives", ""), 30)
@@ -708,6 +724,7 @@ def scenario_testing():
             terminal_run(vm, "svc log craft | tail -3 | cut -c1-66; echo LG$((5-3))", "LG2", 20, "diagnostic")
             print("LOG>", app_line(vm, "terminal", 1), flush=True)
         step("minecraft: the server is running as a service", d is not None)
+        terminal_run(vm, "sleep 5; mc status craft | cut -c1-14; echo MS$((5-3))", "re:(starting|loading|running|failed|stopped).*MS2|(starting|loading|running|failed|stopped)", 60, "minecraft: the status command tells what the server is doing")
         try: terminal_run(vm, "sleep 40; cp /var/log/exec85/craft.log /tmp/c.log; grep -c 'minecraft server version' /tmp/c.log; echo C$((5-3))", "re:[1-9]\\d*C2", 240, "minecraft: the server program starts (Java and the downloaded jar work)")
         except AssertionError:
             dump_file(vm, "/tmp/c.log", 10)
@@ -735,6 +752,30 @@ def scenario_testing():
             terminal_run(vm, f"ls -l /srv/bots/{name}/.env | cut -c1-10", "-rw-------", 30, f"bot: the {lang} bot's token file is private")
             terminal_run(vm, f"svc stop {name}; echo S{tag}$((5-3))", f"S{tag}2", 60, f"bot: the {lang} bot can be stopped")
 
+        # The browser: the allowed list, a real page from an allowed site, and a refusal for the rest
+        terminal_run(vm, "sites list | grep -c alpinelinux.org; echo B$((5-3))", "re:[1-9]\\d*\\s*B2", 30, "browser: the allowed list is installed")
+        terminal_run(vm, "browse https://example.com/ 2>&1 | grep -c 'not on the list'; echo B$((6-3))", "re:[1-9]\\d*\\s*B3", 60, "browser: a site that is not allowed is refused")
+        terminal_run(vm, "browse https://alpinelinux.org/ 2>&1 | grep -ci alpine; echo B$((7-3))", "re:[1-9]\\d*\\s*B4", 90, "browser: a real page from an allowed site is read (secure connection, redirect, layout)")
+        try: terminal_run(vm, "sites add example.com > /tmp/sa.txt 2>&1; browse https://example.com/ > /tmp/ex.txt 2>&1; grep -ci 'domain' /tmp/ex.txt; echo B$((8-3))", "re:[1-9]\\d*\\s*B5", 90, "browser: after allowing a site it opens")
+        except AssertionError:
+            dump_file(vm, "/tmp/sa.txt", 2); dump_file(vm, "/tmp/ex.txt", 4)
+            raise
+        terminal_run(vm, "sites remove example.com; browse https://example.com/ 2>&1 | grep -c 'not on the list'; echo B$((9-3))", "re:[1-9]\\d*\\s*B6", 60, "browser: and is refused again after removing it")
+
+        # Logs and disk health
+        terminal_run(vm, "logs | grep -c kernel; echo G$((5-3))", "re:[1-9]\\d*\\s*G2", 30, "logs: the list includes the kernel log")
+        terminal_run(vm, "logs kernel | wc -l; echo G$((6-3))", "re:[1-9]\\d*\\s*G3", 30, "logs: the kernel log can be read")
+        terminal_run(vm, "logs craft | wc -l; echo G$((7-3))", "re:[1-9]\\d*\\s*G4", 30, "logs: a service's log can be read")
+        terminal_run(vm, "health | grep -c 'Processor temperature'; echo G$((8-3))", "re:[1-9]\\d*\\s*G5", 60, "health: the report shows the processor temperature line")
+        terminal_run(vm, "health | grep -c '^disk '; echo G$((9-3))", "re:\\d+\\s*G6", 60, "health: the report runs (a virtual machine has no SMART: it says so)")
+
+        # Home folders and the Desktop shortcuts
+        try: terminal_run(vm, "ls -d /home/tester/Desktop /home/tester/Documents /home/tester/Downloads /home/tester/Music /home/tester/Pictures /home/tester/Videos | wc -l; echo H$((5-3))", "re:6\\s*H2", 30, "home: the six standard folders exist")
+        except AssertionError:
+            terminal_run(vm, "echo $HOME; ls -a /home/tester | tr '\\n' ' '; echo H$((5-3))", "re:H2", 20, "diagnostic"); print("DIAG-home>", app_line(vm, "terminal", 1), flush=True)
+            raise
+        terminal_run(vm, "ls /home/tester/Desktop | wc -l; echo H$((6-3))", "re:[1-9]\\d*\\s*H3", 30, "home: the Desktop holds shortcuts")
+
         # Quick installers from the app catalog: each is installed for real and must answer
         terminal_run(vm, "svc stop nginx; svc remove nginx; app install website > /tmp/web.txt 2>&1; echo W$((5-3))", "W2", 600, "catalog: the website installer finishes")
         dump_file(vm, "/tmp/web.txt", 6)
@@ -747,6 +788,12 @@ def scenario_testing():
         terminal_run(vm, "app install transmission password=longenough1 > /tmp/tr.txt 2>&1; echo T$((5-3))", "T2", 900, "catalog: the Transmission installer finishes")
         dump_file(vm, "/tmp/tr.txt", 3)
         terminal_run(vm, "sleep 15; wget -S -O /dev/null http://127.0.0.1:9091/transmission/rpc 2>&1 | grep -c HTTP/; echo U$((5-3))", "re:[1-9]\\d*U2", 120, "catalog: Transmission's web page answers")
+        terminal_run(vm, "app install samba password=longenough1 > /tmp/sm.txt 2>&1; echo S$((5-3))", "S2", 900, "catalog: the file sharing installer finishes")
+        dump_file(vm, "/tmp/sm.txt", 3)
+        terminal_run(vm, "sleep 5; cat /proc/net/tcp /proc/net/tcp6 | grep -ci ':01BD '; echo S$((6-3))", "re:[1-9]\\d*\\s*S3", 60, "catalog: Samba listens on the file sharing port (445)")
+        terminal_run(vm, "app install localname > /tmp/ln.txt 2>&1; echo N$((5-3))", "N2", 900, "catalog: the local name installer finishes")
+        dump_file(vm, "/tmp/ln.txt", 3)
+        terminal_run(vm, "sleep 5; cat /proc/net/udp /proc/net/udp6 | grep -ci ':14E9 '; echo N$((6-3))", "re:[1-9]\\d*\\s*N3", 60, "catalog: the name service listens on the mDNS port (5353)")
         terminal_run(vm, "app remove website; app list | grep website; echo R$((5-3))", "re:website +no.*R2|no.*R2", 60, "catalog: the website can be removed")
     finally:
         vm.stop()

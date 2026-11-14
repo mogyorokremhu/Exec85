@@ -12,11 +12,13 @@ mod apps;
 mod cmds;
 mod crypt;
 mod disks;
+mod existing;
 mod display;
 mod fileops;
 mod font;
 mod firewall;
 mod fs;
+mod homedirs;
 mod gfx;
 mod input;
 mod install;
@@ -30,6 +32,7 @@ mod mc;
 mod paint;
 mod recipes;
 mod shell;
+mod smart;
 mod splash;
 mod supervisor;
 mod helper;
@@ -37,6 +40,7 @@ mod services;
 mod ssh;
 mod sys;
 mod usb;
+mod web;
 mod ui;
 
 use app::{App, Effect};
@@ -209,6 +213,46 @@ fn stage_splash() -> ! {
     }
 }
 
+/// Run by the install disc's first process before anything else starts: is Exec85 already installed? Then offer to start it
+/// (by itself after a few seconds). Exits with EXIT_START_INSTALLED to start it, 0 to carry on with the installer.
+fn stage_existing() -> ! {
+    load_layout();
+    let Some(found) = existing::find(&disks::system_disks(), Path::new("/dev")) else { std::process::exit(0) };
+    let mut s = None;
+    for _ in 0..50 { match Screen::try_open() { Ok(x) => { s = Some(x); break; } Err(_) => thread::sleep(Duration::from_millis(100)) } }
+    let Some(mut s) = s else { log("EXEC85_INSTALLER no display for the existing-install question"); std::process::exit(0) };
+    let (cols, rows) = s.cells();
+    let (tx, rx) = channel::<Event>();
+    let key_tx = tx.clone();
+    input::spawn_with(Arc::new(move |k| key_tx.send(Event::Key(k)).is_ok()));
+    let mut ex = existing::Existing::new(cols, rows, system_mode(), found.clone());
+    existing::draw(&ex, &mut s.canvas, &s.m);
+    s.show();
+    announce("existing", &s);
+    log(&ex.state_line());
+    let mut last_line = ex.state_line();
+    loop {
+        let outcome = match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(Event::Key(k)) => ex.handle(k),
+            Ok(Event::Wake) => None,
+            Err(RecvTimeoutError::Timeout) => ex.tick(),
+            Err(RecvTimeoutError::Disconnected) => loop { thread::sleep(Duration::from_secs(3600)); },
+        };
+        match outcome {
+            Some(existing::Outcome::Reinstall) => std::process::exit(0),
+            Some(existing::Outcome::Start) => match existing::write_handoff(&found) {
+                Ok(()) => { log("EXEC85_INSTALLER starting the installed system"); std::process::exit(existing::EXIT_START_INSTALLED) }
+                Err(m) => { ex.msg = Some(m); ex.remaining = None; }
+            },
+            None => {}
+        }
+        existing::draw(&ex, &mut s.canvas, &s.m);
+        s.show();
+        let line = ex.state_line();
+        if line != last_line { log(&line); last_line = line; }
+    }
+}
+
 fn stage_installer() -> ! {
     load_layout();
     let mut s = Screen::open();
@@ -369,8 +413,8 @@ fn main() {
     if let Some(name) = args.first().and_then(|a| Path::new(a).file_name()).map(|n| n.to_string_lossy().into_owned()) {
         if let Some(code) = cmds::run(&name, &args[1..]) { std::process::exit(code); }
         // `svc` and `pkg` are short forms of `exec85 --svc` and `exec85 --pkg`.
-        if name == "svc" || name == "pkg" || name == "mc" || name == "bot" || name == "fw" || name == "app" {
-            let mut a = vec![format!("--{name}")];
+        if name == "svc" || name == "pkg" || name == "mc" || name == "bot" || name == "fw" || name == "app" || name == "sites" || name == "browse" || name == "health" || name == "logs" {
+            let mut a = vec![format!("--{}", if name == "browse" { "web" } else { name.as_str() })];
             a.extend(args[1..].iter().cloned());
             std::process::exit(helper::cli(&a));
         }
@@ -384,11 +428,12 @@ fn main() {
         Some("--ppm") => render_to_file(&args[1..]),
         Some("--splash") => stage_splash(),
         Some("--installer") => stage_installer(),
+        Some("--existing") => stage_existing(),
         Some("--login") => stage_login(),
         Some("--shell") => stage_shell(),
         Some("--helperd") => helper::serve(),
         Some("--net-apply") => { let ctx = helper::Ctx { root: Path::new("/"), runner: &helper::SysRunner }; for n in netapply::apply_all(&ctx) { eprintln!("{n}"); } }
-        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") | Some("--bot") | Some("--fw") | Some("--ssh") | Some("--net") | Some("--app") => std::process::exit(helper::cli(&args[1..])),
+        Some("--svc") | Some("--pkg") | Some("--usb") | Some("--mc") | Some("--bot") | Some("--fw") | Some("--ssh") | Some("--net") | Some("--app") | Some("--sites") | Some("--web") | Some("--health") | Some("--logs") => std::process::exit(helper::cli(&args[1..])),
         None => supervisor::run(),
         Some(other) => { eprintln!("unknown option {other}; try --version"); std::process::exit(2); }
     }

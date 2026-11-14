@@ -57,6 +57,17 @@ impl Shell {
     }
 
     pub fn open_file(&mut self, path: PathBuf) {
+        // A shortcut does what it says instead of being opened as text.
+        if path.extension().map_or(false, |e| e == crate::homedirs::SHORTCUT_EXT) {
+            if let Some((name, target)) = std::fs::read_to_string(&path).ok().and_then(|t| crate::homedirs::parse_shortcut(&t)) {
+                match target {
+                    crate::homedirs::Target::Folder(p) => { if self.app.open_dir(p, None) { self.app.focus = Focus::Files; } else { self.app.msg = Some(format!("{name}: that folder does not exist.")); } }
+                    crate::homedirs::Target::File(p) => { if p.is_file() { self.open_file(p); } else { self.app.msg = Some(format!("{name}: that file does not exist.")); } }
+                    crate::homedirs::Target::App(a) => match apps::Kind::parse(&a) { Some(k) => self.open(k), None => self.app.msg = Some(format!("{name}: there is no app called {a}.")) },
+                }
+                return;
+            }
+        }
         let a = apps::open_file(path, &self.env());
         self.push(a);
     }
@@ -197,6 +208,22 @@ mod tests {
     fn shell() -> Shell { Shell::new(100, 40, Mode::Dark, PathBuf::from("/"), std::env::temp_dir(), Arc::new(|| {})) }
     fn press(s: &mut Shell, keys: &str) -> Vec<Effect> {
         keys.split(',').filter(|x| !x.is_empty()).flat_map(|n| s.handle(parse_key(n).unwrap())).collect()
+    }
+
+    #[test]
+    fn a_shortcut_opens_what_it_points_to() {
+        let root = std::env::temp_dir().join(format!("exec85-shortcut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Documents")).unwrap();
+        let (clock, folder, bad) = (root.join("Clock.shortcut"), root.join("Docs.shortcut"), root.join("Bad.shortcut"));
+        std::fs::write(&clock, "name=Clock\nopen=app:clock\n").unwrap();
+        std::fs::write(&folder, format!("name=Docs\nopen=folder:{}\n", root.join("Documents").display())).unwrap();
+        std::fs::write(&bad, "name=Bad\nopen=app:nosuchapp\n").unwrap();
+        let mut s = shell();
+        s.open_file(clock); assert_eq!(s.windows.len(), 1, "the clock app opened");
+        s.open_file(folder); assert_eq!(s.app.cwd, root.join("Documents")); assert_eq!(s.windows.len(), 1, "no window for a folder");
+        s.open_file(bad); assert!(s.app.msg.as_deref().unwrap_or("").contains("no app called"), "{:?}", s.app.msg); assert_eq!(s.windows.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn fake_drive(mount: &str) -> crate::fs::Drive { crate::fs::Drive { label: "STICK".into(), mount: PathBuf::from(mount), fstype: "vfat".into(), total: 1 << 30, free: 1 << 29 } }

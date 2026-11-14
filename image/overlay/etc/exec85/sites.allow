@@ -1,0 +1,27 @@
+# Websites the Exec85 browser may open. One name per line; a name also allows everything under it
+# (wikipedia.org allows en.wikipedia.org). Change it with:  sites add example.org   /   sites remove example.org
+alpinelinux.org
+debian.org
+ubuntu.com
+kernel.org
+gnu.org
+python.org
+nodejs.org
+rust-lang.org
+crates.io
+docs.rs
+go.dev
+github.com
+githubusercontent.com
+gitlab.com
+sourceforge.net
+wikipedia.org
+wikimedia.org
+mozilla.org
+videolan.org
+7-zip.org
+papermc.io
+fabricmc.net
+minecraft.net
+adoptium.net
+openjdk.org

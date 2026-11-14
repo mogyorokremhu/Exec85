@@ -1,6 +1,8 @@
 #!/bin/sh
 # Early boot: mount the virtual filesystems, set the host name, load drivers.
 # Kept as one small script (instead of many OpenRC services) so boot stays fast.
+# The install disc's first process (live-init) already ran this once.
+[ -e /.early-done ] && exit 0
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
@@ -22,7 +24,7 @@ modprobe -a evdev i8042 atkbd hid_generic usbhid 2>/dev/null
 modprobe -a sd_mod sr_mod ahci ata_piix ata_generic nvme virtio_blk virtio_scsi usb_storage uas 2>/dev/null
 mdev -s
 # Installed systems: mount /boot (and anything else) from /etc/fstab. The live disc has no fstab.
-if ! grep -qw exec85.live /proc/cmdline; then
+if ! grep -qw exec85.live /proc/cmdline || [ -e /etc/exec85/handed-over ]; then
   mount -o remount,rw / 2>/dev/null   # the initramfs mounts the installed root read-only; services and package installs need it writable
   mount -a 2>/dev/null
 fi
