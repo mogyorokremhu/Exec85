@@ -564,10 +564,13 @@ def scenario_webaccess(disk):
             ws.until(state_has("user=tester"))
             step("web access: the session runs as the person who logged in", True)
             call("POST", "/api/key", "k alt-a\n", {"Content-Type": "text/plain", **ck})
-            kind, payload = ws.until(lambda k, b: k == 1)
-            step("web access: a key press changes only part of the picture", ws is not None and len(payload) < 20000, f"{len(payload)} bytes")
-            ws.until(state_has("menu=apps"))
+            sizes = []
+            def seen(k, b):
+                if k == 1: sizes.append(len(b))
+                return k == 2 and "menu=apps" in b.decode(errors="replace")
+            ws.until(seen)
             step("web access: Alt+A opens the Apps menu in the remote session", True)
+            step("web access: a key press changes only part of the picture (a small update was sent)", bool(sizes) and min(sizes) < 20000, f"sizes {sizes}")
             call("POST", "/api/key", "k down\nk enter\n", {"Content-Type": "text/plain", **ck})
             ws.until(state_has("name=terminal"))
             call("POST", "/api/key", "t echo remote$((1+1))\nk enter\n", {"Content-Type": "text/plain", **ck})
