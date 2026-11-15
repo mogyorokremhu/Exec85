@@ -1040,7 +1040,7 @@ def scenario_testing():
 
         # A real Paper server, and a client that logs in to it: Java used to crash (SIGSEGV in native code) the moment a player joined
         terminal_run(vm, "mc stop craft; sleep 3; echo PS$((5-3))", "PS2", 120, "paper login: the other test server is stopped to free the port")
-        terminal_run(vm, "echo eula=true > /srv/minecraft/paper1/eula.txt; printf 'online-mode=false\\nnetwork-compression-threshold=64\\n' > /srv/minecraft/paper1/server.properties; svc start paper1; echo PV$((5-3))", "PV2", 60, "paper login: the Paper server is started (offline mode first, so the compression code runs)")
+        terminal_run(vm, "echo eula=true > /srv/minecraft/paper1/eula.txt; printf 'online-mode=false\\nwhite-list=false\\nenforce-whitelist=false\\nnetwork-compression-threshold=64\\n' > /srv/minecraft/paper1/server.properties; svc start paper1; echo PV$((5-3))", "PV2", 60, "paper login: the Paper server is started (offline mode first, so the compression code runs)")
         wait_done = "for i in $(seq 1 120); do mc log paper1 | grep -q 'Done (' && break; sleep 3; done; mc log paper1 | grep -c 'Done ('; echo PD$((5-3))"
         try: terminal_run(vm, wait_done, "re:[1-9]\\d*\\s*PD2", 480, "paper login: the Paper server finishes starting")
         except AssertionError:
