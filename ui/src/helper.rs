@@ -264,6 +264,13 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "update-good" => crate::update::mark_good(ctx),
         "update-config" => { crate::update::set_conf(ctx, arg(1)?, w.get(2).map(String::as_str).unwrap_or(""))?; Ok("Saved.".into()) }
         "tunnel-status" => Ok(crate::tunnel::status(ctx)),
+        "sw-status" => Ok(crate::sitewatch::status(ctx)),
+        "sw-add" => crate::sitewatch::add_site(ctx, arg(1)?, arg(2).ok().and_then(|s| s.parse().ok()).unwrap_or(crate::sitewatch::DEFAULT_SECONDS)),
+        "sw-remove" => crate::sitewatch::remove_site(ctx, arg(1)?),
+        "sw-notify" => crate::sitewatch::set_notify(ctx, arg(1)?, w.get(2).map(String::as_str).unwrap_or("")),
+        "sw-test" => crate::sitewatch::test_notification(ctx),
+        "sw-enable" => crate::sitewatch::enable(ctx),
+        "sw-disable" => crate::sitewatch::disable(ctx),
         "brightness-status" => Ok(crate::brightness::status(ctx)),
         "brightness-set" => crate::brightness::set(ctx, arg(1)?.parse().map_err(|_| "Brightness is a number from 10 to 100.".to_string())?),
         "web-status" => Ok(crate::webaccess::status(ctx)),
@@ -630,6 +637,20 @@ pub fn cli(args: &[String]) -> i32 {
         ["--health"] => { let be: crate::apps::Backend = std::sync::Arc::new(|w: &[String]| { let r: Vec<&str> = w.iter().map(String::as_str).collect(); call(&r) }); crate::apps::health::report(&be, &mut std::io::stdout()); 0 }
         ["--logs"] => show(call(&["log-list"])),
         ["--logs", name] => show(call(&["log-tail", name, "40"])),
+        ["--sitewatch"] | ["--sitewatch", "list"] | ["--sitewatch", "status"] => show(call(&["sw-status"])),
+        ["--sitewatch", "add", url] => show(call(&["sw-add", url])),
+        ["--sitewatch", "add", url, every] => {
+            // minutes by default; "30s" means seconds
+            let secs = match every.strip_suffix('s') { Some(n) => n.parse::<u64>().ok(), None => every.parse::<u64>().ok().map(|m| m * 60) };
+            show(call(&["sw-add", url, &secs.map_or_else(|| every.to_string(), |v| v.to_string())]))
+        }
+        ["--sitewatch", "remove", id] => show(call(&["sw-remove", id])),
+        ["--sitewatch", "notify", "off"] => { let _ = call(&["sw-notify", "ntfy-topic", ""]); show(call(&["sw-notify", "discord", ""])) }
+        ["--sitewatch", "notify", "ntfy", topic] => show(call(&["sw-notify", "ntfy-topic", topic])),
+        ["--sitewatch", "notify", "discord", url] => show(call(&["sw-notify", "discord", url])),
+        ["--sitewatch", "notify", "server", url] => show(call(&["sw-notify", "ntfy-server", url])),
+        ["--sitewatch", "test"] => show(call(&["sw-test"])),
+        ["--sitewatch", on_off @ ("on" | "off")] => show(call(&[if *on_off == "on" { "sw-enable" } else { "sw-disable" }])),
         ["--brightness"] | ["--brightness", "status"] => show(call(&["brightness-status"])),
         ["--brightness", n] => show(call(&["brightness-set", n])),
         ["--webaccess"] | ["--webaccess", "status"] => show(call(&["web-status"])),

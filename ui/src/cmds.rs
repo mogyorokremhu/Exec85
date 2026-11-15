@@ -5,7 +5,7 @@ use crate::fs::{self as xfs, fmt_size, fmt_time, Drive, Sort};
 use std::io::Write;
 use std::path::Path;
 
-pub const COMMANDS: [(&str, &str); 18] = [
+pub const COMMANDS: [(&str, &str); 19] = [
     ("help", "this list"),
     ("dir", "list a folder with sizes and dates"),
     ("disk", "how full each drive is"),
@@ -17,6 +17,7 @@ pub const COMMANDS: [(&str, &str); 18] = [
     ("health", "disk health (SMART) and temperatures"),
     ("logs", "logs: logs (list) | logs NAME (newest lines, e.g. logs kernel)"),
     ("update", "updates: update status | check | install | apply FILE | rollback | previous | token"),
+    ("sitewatch", "website monitor with phone alerts: sitewatch add URL [minutes] | list | remove ID | notify ntfy TOPIC | test | on | off"),
     ("brightness", "screen brightness: brightness | brightness 10..100 (a laptop backlight, or the picture is darkened)"),
     ("webaccess", "the Exec85 screen in a web browser (for the garage): webaccess on | off | status"),
     ("tunnel", "internet tunnel for CGNAT (playit.gg): tunnel install | claim | status | reset | remove"),

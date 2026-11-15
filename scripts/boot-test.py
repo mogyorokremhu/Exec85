@@ -525,6 +525,22 @@ def scenario_webaccess(disk):
         c = conn(); h = {"X-Exec85": "1"}; h.update(headers or {})
         c.request(method, path, body=body, headers=h)
         r = c.getresponse(); data = r.read(); return r.status, r.getheaders(), data
+    # the phone: a small web server that records the alerts the website monitor sends (ntfy.sh style: a POST to /topic)
+    import http.server, threading
+    alerts = []
+    class Phone(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", "0")); body = self.rfile.read(n).decode(errors="replace")
+            alerts.append((self.path, body, self.headers.get("Title", ""))); self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+        def log_message(self, *a): pass
+    phone = http.server.ThreadingHTTPServer(("127.0.0.1", 18090), Phone); threading.Thread(target=phone.serve_forever, daemon=True).start()
+    def wait_alert(text, seconds):
+        end = time.time() + seconds
+        while time.time() < end:
+            for a in alerts:
+                if text in a[1]: return a
+            time.sleep(1)
+        return None
     vm = VM("webaccess", disk=disk, extra=["-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:8443-:8443", "-device", "e1000e,netdev=n0"])
     try:
         login_tester(vm)
@@ -595,6 +611,17 @@ def scenario_webaccess(disk):
             for i in range(5): call("POST", "/api/login", "user=tester&pass=wrong%d" % i, {"Content-Type": "application/x-www-form-urlencoded"})
             st, _, _ = call("POST", "/api/login", "user=tester&pass=secret7-", {"Content-Type": "application/x-www-form-urlencoded"})
             step("web access: after five wrong passwords even the right one is refused for a while", st == 429, f"{st}")
+        if ok:
+            # the website monitor watches the web access service itself: down when it is switched off, back up when it is switched on again
+            terminal_run(vm, "sitewatch notify server http://10.0.2.2:18090 > /dev/null; sitewatch notify ntfy ci-garage-4821 > /dev/null; sitewatch add http://127.0.0.1:8442/ 10s > /dev/null; sitewatch on > /dev/null 2>&1; echo SW$((5-3))", "SW2", 90, "monitor: a site is added, the phone topic is set and the monitor is switched on")
+            terminal_run(vm, "sitewatch test; echo ST$((5-3))", "re:ST2", 60, "monitor: the test message is sent")
+            a = wait_alert("test message", 30); step("monitor: the test message reaches the phone", a is not None and a[0] == "/ci-garage-4821", repr(alerts))
+            terminal_run(vm, "sleep 12; sitewatch list | grep -c ' up '; echo SU$((5-3))", "re:[1-9]\\s*SU2", 90, "monitor: the watched site is seen as up")
+            terminal_run(vm, "webaccess off > /dev/null 2>&1; echo W0$((5-3))", "W02", 90, "monitor: the watched service is switched off")
+            a = wait_alert("is DOWN", 120); step("monitor: the phone is told the site is down", a is not None and "127.0.0.1:8442" in a[1] and "down" in a[2].lower(), repr(alerts))
+            terminal_run(vm, "webaccess on > /dev/null 2>&1; echo W1$((5-3))", "W12", 240, "monitor: the watched service is switched on again")
+            a = wait_alert("back UP", 150); step("monitor: the phone is told the site is back up", a is not None and "127.0.0.1:8442" in a[1], repr(alerts))
+            terminal_run(vm, "sitewatch off > /dev/null 2>&1; sitewatch remove s1 > /dev/null 2>&1; sitewatch list | grep -c site; echo SX$((5-3))", "re:0\\s*SX2", 60, "monitor: it can be switched off and the site removed")
         terminal_run(vm, "webaccess off > /dev/null 2>&1; svc list | grep -c webaccess; echo WO$((5-3))", "re:0.?WO2", 90, "web access: it can be switched off again")
     finally:
         vm.stop()
@@ -677,7 +704,7 @@ def mc_login(port, protocol, online):
     c.s.close(); return "no answer"
 
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel", "updates"]
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel", "updates", "sitewatch"]
 
 SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}
