@@ -10,7 +10,7 @@ W=/work
 CMDLINE=${KERNEL_CMDLINE:-"console=tty0 console=ttyS0,115200 rdinit=/etc/exec85/live-init quiet loglevel=3 vt.global_cursor_default=0 exec85.live"}
 
 echo "==> installing build tools"
-apk add --no-cache rust cargo build-base xorriso kmod cpio gzip >/dev/null
+apk add --no-cache rust cargo build-base xorriso kmod cpio gzip tar >/dev/null
 # Limine bootloader. Alpine splits it: the tool, the x86_64 EFI file, the BIOS file, and the CD images.
 apk add --no-cache limine limine-x86_64 limine-cd limine-sys >/dev/null
 for p in $(apk info | grep -i limine); do echo "--- files of $p"; apk info -L "$p" | grep -v -e doc -e man; done
@@ -69,9 +69,11 @@ du -sk "$R"/* "$R"/lib/modules/*/kernel/* 2>/dev/null | sort -rn | head -15
 rm -rf "${R:?}/boot" "${R:?}/var/cache/apk" "${R:?}/usr/share/man" "${R:?}/usr/share/apk"
 
 if [ -f "$SRC/image/assets/audio/installer.mp3" ]; then install -D -m 644 "$SRC/image/assets/audio/installer.mp3" "$R/usr/share/exec85/audio/installer.mp3"; fi
+VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$SRC/ui/Cargo.toml" | head -n1)
+install -D -m 644 /dev/null "$R/etc/exec85/package-version"; echo "$VERSION" > "$R/etc/exec85/package-version"
 install -D -m 755 "$BIN" "$R/usr/bin/exec85"
 # Our own terminal commands are this same program under other names.
-for c in dir disk about get svc pkg mc bot fw app browse sites health logs tunnel; do ln -sf exec85 "$R/usr/bin/$c"; done
+for c in dir disk about get svc pkg mc bot fw app browse sites health logs tunnel update; do ln -sf exec85 "$R/usr/bin/$c"; done
 cp -a "$SRC/image/overlay/." "$R/"
 mkdir -p "$R/proc" "$R/sys" "$R/dev" "$R/run" "$R/tmp" "$R/root"
 # OpenRC: only the 'default' runlevel is used for now (user services live there from milestone 5).
@@ -107,7 +109,26 @@ make_iso() {
 make_iso exec85.iso "$CMDLINE"
 make_iso exec85-testing.iso "$CMDLINE exec85.testing"
 
+echo "==> building the update package (for updating an installed system in place)"
+# Only the system's own files go in (see ui/src/update.rs for the list an update may touch): never settings, accounts or data.
+U=$W/update; rm -rf "${U:?}"; mkdir -p "$U/files"
+for f in usr/bin/exec85 sbin/exec85-rollback etc/inittab etc/mdev.conf etc/exec85/early-boot.sh etc/exec85/start-splash.sh etc/exec85/mc-run etc/exec85/shrc etc/exec85/live-init etc/exec85/package-version etc/init.d/exec85-firewall etc/init.d/exec85-net; do
+    [ -e "$R/$f" ] || { echo "ERROR: $f missing from the root file system"; exit 1; }
+    mkdir -p "$U/files/$(dirname "$f")"; cp -a "$R/$f" "$U/files/$f"
+done
+for c in dir disk about get svc pkg mc bot fw app browse sites health logs tunnel update; do mkdir -p "$U/files/usr/bin"; ln -sf exec85 "$U/files/usr/bin/$c"; done
+mkdir -p "$U/files/etc/runlevels/default"; for l in "$R"/etc/runlevels/default/exec85-*; do cp -a "$l" "$U/files/etc/runlevels/default/"; done
+mkdir -p "$U/files/usr/share/exec85"; [ -d "$R/usr/share/exec85/audio" ] && cp -a "$R/usr/share/exec85/audio" "$U/files/usr/share/exec85/audio"
+# the kernel, its modules and the boot image for installed systems (used only if the installed system does not have this kernel yet)
+mkdir -p "$U/files/boot" "$U/files/lib/modules"
+cp "$W/vmlinuz" "$U/files/boot/vmlinuz"; cp "$R/usr/share/exec85/install/initramfs" "$U/files/boot/initramfs"
+cp -a "$R/lib/modules/$KVER" "$U/files/lib/modules/$KVER"
+printf 'exec85-update 1\nversion=%s\nkernel=%s\n' "$VERSION" "$KVER" > "$U/manifest"
+(cd "$U" && tar --owner=0 --group=0 --numeric-owner -czf "$OUT/exec85-update.tar.gz" manifest files)
+ls -l "$OUT/exec85-update.tar.gz"; tar -tzvf "$OUT/exec85-update.tar.gz" | head -30
+
 {
+  echo "update_package_bytes=$(stat -c %s "$OUT/exec85-update.tar.gz")"
   echo "iso_bytes=$(stat -c %s "$OUT/exec85.iso")"
   echo "testing_iso_bytes=$(stat -c %s "$OUT/exec85-testing.iso")"
   echo "binary_bytes=$(stat -c %s "$BIN")"
@@ -116,4 +137,4 @@ make_iso exec85-testing.iso "$CMDLINE exec85.testing"
   echo "kernel_bytes=$(stat -c %s "$W/vmlinuz")"
 } > "$OUT/sizes.txt"
 cat "$OUT/sizes.txt"
-echo "==> done: $OUT/exec85.iso and $OUT/exec85-testing.iso"
+echo "==> done: $OUT/exec85.iso, $OUT/exec85-testing.iso and $OUT/exec85-update.tar.gz"

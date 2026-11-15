@@ -373,6 +373,8 @@ def scenario_install():
     finally:
         vm.stop()
 
+    scenario_update(disk)
+
     # ---- fourth boot: the install disc is still in the drive. It must not install again: it finds the installed system and starts it ----
     vm = VM("disc-left-in", cdrom=iso, disk=disk)
     try:
@@ -395,7 +397,95 @@ def scenario_install():
         vm.stop()
 
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel"]
+def login_tester(vm):
+    """Log in as 'tester' (UK keyboard) and open a Terminal."""
+    step(f"{vm.tag}: login screen is shown", vm.wait_for(r"EXEC85_SCREEN login", 600 if SLOW else 150) is not None, "\n".join(vm.text().splitlines()[-20:]))
+    time.sleep(2)
+    n = len(vm.lines("EXEC85_STATE"))
+    typed(vm, PW_KEYS, "EXEC85_LOGIN", pw_len="8")
+    vm.monitor("sendkey ret")
+    vm.wait_line("EXEC85_STATE", lambda d: d.get("user") == "tester", STEP_TIMEOUT, after=n)
+    time.sleep(1)
+    open_app(vm, 1)
+
+def restart_from_menu(vm, what):
+    press(vm, "f4")
+    press(vm, "f10", menu="file")
+    press(vm, "up"); press(vm, "up", item="15")
+    press(vm, "ret")
+    vm.monitor("sendkey y")
+    for _ in range(300):
+        if vm.p.poll() is not None: break
+        time.sleep(0.2)
+    step(f"{what}: the computer restarts", vm.p.poll() is not None)
+
+def scenario_update(disk):
+    """Update the installed system in place from a pendrive: files replaced, data kept, trial boot, mark good, go back to the previous version."""
+    import io, tarfile
+    src = os.path.join(os.path.dirname(os.path.abspath(iso)), "exec85-update.tar.gz")
+    step("update: the build produced an update package", os.path.exists(src), src)
+    pkg = os.path.join(outdir, "exec85-update-test.tar.gz")
+    with tarfile.open(src) as tin, tarfile.open(pkg, "w:gz") as tout:
+        names = tin.getnames()
+        step("update: the package has a manifest and files", "manifest" in names and any(n == "files/usr/bin/exec85" for n in names), str(names[:8]))
+        for m in tin.getmembers():
+            if m.name.startswith(("files/boot", "files/lib/modules")): continue   # same kernel: keeps the test stick small
+            if m.name == "manifest":
+                data = b"exec85-update 1\nversion=99.0.0\n"; m.size = len(data); tout.addfile(m, io.BytesIO(data))
+            elif m.name == "files/etc/exec85/package-version":
+                data = b"99.0.0\n"; m.size = len(data); tout.addfile(m, io.BytesIO(data))
+            elif m.isfile(): tout.addfile(m, tin.extractfile(m))
+            else: tout.addfile(m)
+        mk = tarfile.TarInfo("files/usr/share/exec85/marker"); data = b"new\n"; mk.size = len(data); mk.mode = 0o644; mk.uid = mk.gid = 0; tout.addfile(mk, io.BytesIO(data))
+    usb = os.path.join(outdir, "update-usb.img")
+    with open(usb, "wb") as f: f.truncate(256 << 20)
+    subprocess.run(["mkfs.vfat", "-F", "32", "-n", "UPDUSB", usb], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["mcopy", "-i", usb, pkg, "::exec85-update-test.tar.gz"], check=True)
+    extra = ["-device", "qemu-xhci,id=xhci", "-drive", f"if=none,id=usbd,file={usb},format=raw"]
+
+    # boot 1: apply the update from the stick, keep working, restart
+    vm = VM("update-apply", disk=disk, extra=extra)
+    try:
+        login_tester(vm)
+        terminal_run(vm, "echo kept > /home/tester/keepme; echo KP$((5-3))", "KP2", 30, "update: some user data to keep")
+        vm.monitor("device_add usb-storage,drive=usbd,id=usbdev,bus=xhci.0")
+        step("update: the stick with the update package is mounted", vm.wait_for(r"EXEC85_USB added dev=(\S+) fs=vfat label=UPDUSB mount=(\S+)", 90) is not None)
+        terminal_run(vm, "ls /media/UPDUSB | cut -c1-30; echo LS$((5-3))", "re:update.*LS2", 30, "update: the package is on the stick")
+        terminal_run(vm, "update apply /media/UPDUSB/exec85-update-test.tar.gz > /tmp/u.txt 2>&1; echo UA=$?", "UA=0", 180, "update: the package is applied")
+        terminal_run(vm, "cat /tmp/u.txt | cut -c1-60; update status | grep -c 'version=99.0.0'; echo U$((5-3))", "re:[1-9]\\d*\\s*U2", 60, "update: the new version is installed")
+        terminal_run(vm, "update status | grep -c 'pending=yes'; echo U$((6-3))", "re:[1-9]\\d*\\s*U3", 60, "update: it is on trial")
+        terminal_run(vm, "cat /usr/share/exec85/marker; echo MK$((5-3))", "re:new\\s*MK2", 30, "update: the new files are in place")
+        terminal_run(vm, "update status | grep -c -e 'menu_timeout=3' -e 'menu_previous=yes'; echo LM$((5-3))", "re:2\\s*LM2", 30, "update: the boot menu offers the previous version")
+        terminal_run(vm, "update apply /media/UPDUSB/exec85-update-test.tar.gz > /tmp/u2.txt 2>&1; echo UB=$?", "re:UB=[1-9]", 120, "update: the same version is refused a second time")
+        restart_from_menu(vm, "update")
+    finally:
+        vm.stop()
+
+    # boot 2: trial of the new version; after it ran well it becomes final
+    vm = VM("update-trial", disk=disk)
+    try:
+        login_tester(vm)
+        terminal_run(vm, "echo $(cat /etc/exec85/package-version) $(cat /home/tester/keepme) V$((5-3))", "re:99\\.0\\.0.kept.V2", 30, "update trial: the new version runs and the user's data is untouched")
+        terminal_run(vm, "svc list | grep -c ticker; echo SV$((5-3))", "re:[1-9]\\s*SV2", 60, "update trial: the user's service is still defined")
+        terminal_run(vm, "update config good_after 5; sleep 20; update status | grep -c 'pending=no'; echo G$((5-3))", "re:[1-9]\\s*G2", 90, "update trial: after running well the new version is made final")
+        terminal_run(vm, "update status | grep -c 'menu_timeout=0'; echo T$((5-3))", "re:[1-9]\\s*T2", 30, "update trial: the boot menu is hidden again")
+        terminal_run(vm, "update previous > /tmp/p.txt 2>&1; echo PV=$?", "PV=0", 60, "update: going back to the previous version is set up")
+        restart_from_menu(vm, "update trial")
+    finally:
+        vm.stop()
+
+    # boot 3: the previous version is started from the boot menu; the new files are taken away again
+    vm = VM("update-previous", disk=disk)
+    try:
+        login_tester(vm)
+        terminal_run(vm, "echo $(test -e /usr/share/exec85/marker || echo GONE$((1+1))) $(grep -c 99.0.0 /etc/exec85/package-version) B$((5-3))", "re:GONE2.0.B2", 60, "previous: the update's files are gone again")
+        terminal_run(vm, "cat /home/tester/keepme; echo KK$((5-3))", "re:kept\\s*KK2", 30, "previous: the user's data is still there")
+        terminal_run(vm, "update status | grep -c 'pending=no'; echo N$((5-3))", "re:[1-9]\\s*N2", 30, "previous: nothing is left pending")
+    finally:
+        vm.stop()
+
+
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel", "updates"]
 
 SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}

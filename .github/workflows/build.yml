@@ -27,6 +27,7 @@ jobs:
           path: |
             out/exec85.iso
             out/exec85-testing.iso
+            out/exec85-update.tar.gz
             out/sizes.txt
 
   boot-test:

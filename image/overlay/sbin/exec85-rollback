@@ -1,0 +1,35 @@
+#!/bin/sh
+# Puts the PREVIOUS Exec85 version back (the files the last update replaced were saved first).
+#  - As the init program of the boot entry "Exec85 (previous version)": restores, then hands over to the normal init.
+#  - As `exec85-rollback --now` (what `update rollback` runs): restores and exits.
+# EXEC85_ROOT can point at another root folder (for tests).
+R="${EXEC85_ROOT:-}"
+S="$R/var/lib/exec85/update"
+P="$S/prev"
+say() { echo "EXEC85_ROLLBACK $*" > /dev/console 2>/dev/null || echo "EXEC85_ROLLBACK $*"; }
+
+restore() {
+  [ -d "$P/files" ] || { say "nothing to restore"; return 1; }
+  if [ -z "$R" ]; then
+    mount -o remount,rw / 2>/dev/null
+    mountpoint -q /boot 2>/dev/null || mount /boot 2>/dev/null
+  fi
+  # files the update added: take them away
+  if [ -f "$P/new-files" ]; then while read -r f; do [ -n "$f" ] && rm -f "$R/$f"; done < "$P/new-files"; fi
+  # files the update replaced: put the saved ones back (the old ones are removed first, so a link is never written through)
+  (cd "$P/files" && find . \( -type f -o -type l \) | sed 's|^\./||') | while read -r f; do rm -f "$R/$f"; done
+  cp -a "$P/files/." "$R/" || { say "copying the saved files failed"; return 1; }
+  # the kernel
+  if [ -f "$R/boot/vmlinuz.prev" ]; then mv -f "$R/boot/vmlinuz.prev" "$R/boot/vmlinuz"; [ -f "$R/boot/initramfs.prev" ] && mv -f "$R/boot/initramfs.prev" "$R/boot/initramfs"; fi
+  [ -f "$P/limine.conf" ] && cp -f "$P/limine.conf" "$R/boot/limine.conf"
+  rm -f "$S/pending"
+  rm -rf "$P"
+  sync
+  say "restored the previous version"
+  return 0
+}
+
+case "$1" in
+  --now) restore; exit $? ;;
+  *) restore; exec /sbin/init "$@" ;;
+esac
