@@ -1070,6 +1070,9 @@ def scenario_testing():
         # the player is not real, so the server refuses the login; what matters is that Java survives it (any answer or a closed connection is fine)
         step("paper login: the encrypted login is handled (answered or closed, not crashed)", r.startswith("disconnected") or r == "success" or "Reset" in r or "closed" in r, r)
         terminal_run(vm, "mc stop paper1; echo PX$((5-3))", "PX2", 60, "paper login: the Paper server is stopped again")
+        # the test system keeps its files in memory: give back the space the servers took (worlds, libraries) before the next tests
+        terminal_run(vm, "svc remove paper1 > /dev/null 2>&1; svc remove fabric1 > /dev/null 2>&1; rm -rf /srv/minecraft/paper1 /srv/minecraft/fabric1 /srv/minecraft/craft /home/tester/mcgames; df -m / | tail -1 | cut -c1-60; echo DF$((5-3))", "DF2", 120, "paper login: the test servers are removed to free space")
+        print("DF>", app_line(vm, "terminal", 1), flush=True)
 
 
         # Discord bots, Python and Node.js, installed for real with a fake token: the real library must run and refuse the token
@@ -1134,7 +1137,11 @@ def scenario_testing():
         terminal_run(vm, "sleep 15; wget -S -O /dev/null http://127.0.0.1:9091/transmission/rpc 2>&1 | grep -c HTTP/; echo U$((5-3))", "re:[1-9]\\d*U2", 120, "catalog: Transmission's web page answers")
         terminal_run(vm, "app install samba password=longenough1 > /tmp/sm.txt 2>&1; echo S$((5-3))", "S2", 900, "catalog: the file sharing installer finishes")
         dump_file(vm, "/tmp/sm.txt", 3)
-        terminal_run(vm, "for i in $(seq 1 20); do cat /proc/net/tcp /proc/net/tcp6 | grep -qi ':01BD ' && break; sleep 2; done; cat /proc/net/tcp /proc/net/tcp6 | grep -ci ':01BD '; echo S$((6-3))", "re:[1-9]\\d*\\s*S3", 60, "catalog: Samba listens on the file sharing port (445)")
+        try: terminal_run(vm, "for i in $(seq 1 20); do cat /proc/net/tcp /proc/net/tcp6 | grep -qi ':01BD ' && break; sleep 2; done; cat /proc/net/tcp /proc/net/tcp6 | grep -ci ':01BD '; echo S$((6-3))", "re:[1-9]\\d*\\s*S3", 90, "catalog: Samba listens on the file sharing port (445)")
+        except AssertionError:
+            terminal_run(vm, "(df -m / | tail -1; free -m | sed -n 2p; svc list | grep -i -E 'smb|samba'; svc log samba | tail -2) > /tmp/sd.txt 2>&1; echo SD$((5-3))", "SD2", 60, "diagnostic")
+            dump_file(vm, "/tmp/sd.txt", 5)
+            raise
         terminal_run(vm, "app install localname > /tmp/ln.txt 2>&1; echo N$((5-3))", "N2", 900, "catalog: the local name installer finishes")
         dump_file(vm, "/tmp/ln.txt", 3)
         terminal_run(vm, "sleep 5; cat /proc/net/udp /proc/net/udp6 | grep -ci ':14E9 '; echo N$((6-3))", "re:[1-9]\\d*\\s*N3", 60, "catalog: the name service listens on the mDNS port (5353)")
