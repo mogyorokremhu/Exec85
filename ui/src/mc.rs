@@ -219,7 +219,27 @@ pub fn eula_text(accepted: bool) -> String {
 /// The program that starts a server with a console (see `image/overlay/etc/exec85/mc-run`).
 pub const RUN_SCRIPT: &str = "/etc/exec85/mc-run";
 
-pub fn server_command(java: &str, ram_gb: u32) -> String { format!("{RUN_SCRIPT} {java} -Xmx{ram_gb}G -Xms1G -jar server.jar nogui") }
+/// Java options that keep the server off the "native" network and compression code that Paper (and Velocity-based servers)
+/// bring in their jar. Those libraries are built for another Linux C library than Exec85's, and Java crashed (SIGSEGV) the moment
+/// somebody logged in. Without them the servers use their plain Java code, which is fast enough for a home server.
+pub const JVM_FLAGS: &str = "-Dio.netty.transport.noNative=true -Dvelocity.natives-disabled=true";
+
+pub fn server_command(java: &str, ram_gb: u32) -> String { format!("{RUN_SCRIPT} {java} -Xmx{ram_gb}G -Xms1G {JVM_FLAGS} -jar server.jar nogui") }
+
+/// A start command written by an older version, with the options added. None when it needs nothing.
+pub fn with_flags(command: &str) -> Option<String> {
+    if !command.contains(" -jar server.jar") || command.contains("velocity.natives-disabled") { return None; }
+    Some(command.replacen(" -jar server.jar", &format!(" {JVM_FLAGS} -jar server.jar"), 1))
+}
+
+/// Servers installed before this existed get the options too (the running ones pick them up at their next start).
+pub fn migrate_services(ctx: &Ctx) {
+    for n in crate::helper::list_names(ctx.root) {
+        let Ok(text) = std::fs::read_to_string(ctx.root.join("etc/exec85/services").join(format!("{n}.conf"))) else { continue };
+        let Some(mut d) = services::parse_conf(&text) else { continue };
+        if let Some(c) = with_flags(&d.command) { d.command = c; let _ = crate::helper::handle(ctx, &["svc-save".to_string(), services::render_conf(&d)]); }
+    }
+}
 
 pub const NO_CONSOLE: &str = "This server was installed before the console existed. Add the console (F5), then restart the server.";
 
@@ -693,7 +713,11 @@ mod tests {
         assert_eq!(ram_choices(6_000_000), vec![2, 4]);
         assert_eq!(ram_choices(16_000_000), vec![2, 4, 8]);
         assert!(eula_text(true).ends_with("eula=true\n") && eula_text(false).ends_with("eula=false\n") && eula_text(true).contains("aka.ms/MinecraftEULA"));
-        assert_eq!(server_command("/usr/lib/jvm/java-21-openjdk/bin/java", 4), "/etc/exec85/mc-run /usr/lib/jvm/java-21-openjdk/bin/java -Xmx4G -Xms1G -jar server.jar nogui");
+        assert_eq!(server_command("/usr/lib/jvm/java-21-openjdk/bin/java", 4), "/etc/exec85/mc-run /usr/lib/jvm/java-21-openjdk/bin/java -Xmx4G -Xms1G -Dio.netty.transport.noNative=true -Dvelocity.natives-disabled=true -jar server.jar nogui");
+        // an older server's command gets the options once, and nothing else changes
+        assert_eq!(with_flags("/etc/exec85/mc-run java -Xmx2G -jar server.jar nogui").as_deref(), Some("/etc/exec85/mc-run java -Xmx2G -Dio.netty.transport.noNative=true -Dvelocity.natives-disabled=true -jar server.jar nogui"));
+        assert_eq!(with_flags(&server_command("java", 2)), None);
+        assert_eq!(with_flags("sleep 100000"), None);
         assert!(valid_version_id("1.21.5") && valid_version_id("25w01a") && !valid_version_id("../x") && !valid_version_id("a b") && !valid_version_id(""));
     }
 
@@ -888,6 +912,26 @@ mod tests {
     fn the_version_list_shows_releases_newest_first() {
         let r = world("list", 8_000_000); let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
         assert_eq!(versions(&ctx, ServerType::Vanilla).unwrap(), "latest 1.21.5\nrelease 1.21.5\nrelease 1.8.9\n");
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn servers_from_older_versions_get_the_java_options_and_nothing_else_changes() {
+        let r = world("migrate", 4_000_000);
+        let f = fake("x");
+        let c = Ctx { root: &r, runner: &f };
+        let old = ServiceDef { name: "survival".into(), description: "Paper server".into(), command: "/etc/exec85/mc-run /opt/java-21/bin/java -Xmx2G -Xms1G -jar server.jar nogui".into(), dir: "/srv/minecraft/survival".into(), user: "tester".into(), env: vec![], autostart: true, ports: "25565/tcp".into() };
+        let other = ServiceDef { name: "ticker".into(), description: "x".into(), command: "sleep 100000".into(), dir: "/".into(), user: "tester".into(), env: vec![], autostart: false, ports: String::new() };
+        for d in [&old, &other] { crate::helper::handle(&c, &["svc-save".to_string(), services::render_conf(d)]).unwrap(); }
+        migrate_services(&c);
+        let read = |n: &str| services::parse_conf(&std::fs::read_to_string(r.join(format!("etc/exec85/services/{n}.conf"))).unwrap()).unwrap();
+        let (a, b) = (read("survival"), read("ticker"));
+        assert!(a.command.contains("-Xmx2G -Xms1G -Dio.netty.transport.noNative=true -Dvelocity.natives-disabled=true -jar server.jar nogui") && a.ports == "25565/tcp" && a.dir == "/srv/minecraft/survival", "{a:?}");
+        assert_eq!(b.command, "sleep 100000");
+        let again = std::fs::read_to_string(r.join("etc/init.d/exec85-survival")).unwrap();
+        migrate_services(&c);
+        assert_eq!(std::fs::read_to_string(r.join("etc/init.d/exec85-survival")).unwrap(), again, "a second run changes nothing");
+        assert!(again.contains("velocity.natives-disabled"), "the start script has the options");
         let _ = std::fs::remove_dir_all(&r);
     }
 }

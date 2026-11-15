@@ -535,6 +535,7 @@ pub fn serve() -> ! {
     std::thread::spawn(report_loop);
     std::thread::spawn(usb_watch);
     std::thread::spawn(update_watch);
+    if !crate::supervisor::cmdline_has("exec85.live") { crate::mc::migrate_services(&Ctx { root: Path::new("/"), runner: &SysRunner }); }
     let _ = fw_apply(&Ctx { root: Path::new("/"), runner: &SysRunner });   // make sure the rules match the services that exist
     for c in l.incoming().flatten() { std::thread::spawn(move || serve_one(c)); }
     std::process::exit(1)

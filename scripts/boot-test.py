@@ -596,6 +596,83 @@ def scenario_webaccess(disk):
         vm.stop()
 
 
+# ---- a tiny Minecraft client: just enough of the protocol to log in to a server ----
+def mc_varint(n):
+    out = b""
+    while True:
+        b = n & 0x7F; n >>= 7
+        if n: out += bytes([b | 0x80])
+        else: return out + bytes([b])
+def mc_str(s): b = s.encode(); return mc_varint(len(b)) + b
+def mc_packet(pid, data): body = mc_varint(pid) + data; return mc_varint(len(body)) + body
+def mc_varint_at(b, i):
+    n = 0; shift = 0
+    while True:
+        x = b[i]; i += 1; n |= (x & 0x7F) << shift; shift += 7
+        if not x & 0x80: return n, i
+        if shift > 35: raise ValueError("varint too long")
+
+class McConn:
+    def __init__(self, port):
+        self.s = socket.create_connection(("127.0.0.1", port), timeout=45); self.enc = self.dec = None; self.compress = False
+    def read_exact(self, n):
+        out = b""
+        while len(out) < n:
+            c = self.s.recv(n - len(out))
+            if not c: raise EOFError("the server closed the connection")
+            out += c
+        return self.dec.update(out) if self.dec else out
+    def read_varint(self):
+        n = 0; shift = 0
+        while True:
+            x = self.read_exact(1)[0]; n |= (x & 0x7F) << shift; shift += 7
+            if not x & 0x80: return n
+            if shift > 35: raise ValueError("varint too long")
+    def send(self, pid, data):
+        raw = mc_packet(pid, data)
+        self.s.sendall(self.enc.update(raw) if self.enc else raw)
+    def packet(self):
+        body = self.read_exact(self.read_varint())
+        if self.compress:
+            size, i = mc_varint_at(body, 0)
+            body = zlib.decompress(body[i:]) if size else body[i:]
+        pid, i = mc_varint_at(body, 0)
+        return pid, body[i:]
+    def handshake(self, protocol, next_state, port):
+        self.send(0x00, mc_varint(protocol) + mc_str("localhost") + struct.pack(">H", port) + mc_varint(next_state))
+
+def mc_status(port):
+    c = McConn(port); c.handshake(0, 1, port); c.send(0x00, b"")
+    pid, data = c.packet(); n, i = mc_varint_at(data, 0)
+    info = json.loads(data[i:i + n]); c.s.close(); return info
+
+def mc_login(port, protocol, online):
+    """Log in as a made-up player. Returns what the server said ('success', or the reason it gave)."""
+    c = McConn(port); c.handshake(protocol, 2, port)
+    c.send(0x00, mc_str("citest") + bytes(range(1, 17)))
+    for _ in range(20):
+        pid, data = c.packet()
+        if pid == 0x03: thr, _ = mc_varint_at(data, 0); c.compress = thr >= 0; continue       # Set Compression
+        if pid == 0x02: c.s.close(); return "success"                                           # Login Success
+        if pid == 0x00: n, i = mc_varint_at(data, 0); c.s.close(); return "disconnected: " + data[i:i + n].decode(errors="replace")[:150]
+        if pid == 0x01 and online:                                                               # Encryption Request: switch the encryption on, like the real game
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric import padding
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+            try: from cryptography.hazmat.decrepit.ciphers.modes import CFB8
+            except ImportError: from cryptography.hazmat.primitives.ciphers.modes import CFB8
+            n, i = mc_varint_at(data, 0); i += n                       # server id
+            n, i = mc_varint_at(data, i); key = serialization.load_der_public_key(data[i:i + n]); i += n
+            n, i = mc_varint_at(data, i); token = data[i:i + n]
+            secret = os.urandom(16)
+            es, et = key.encrypt(secret, padding.PKCS1v15()), key.encrypt(token, padding.PKCS1v15())
+            c.send(0x01, mc_varint(len(es)) + es + mc_varint(len(et)) + et)
+            cipher = Cipher(algorithms.AES(secret), CFB8(secret)); c.enc = cipher.encryptor(); c.dec = cipher.decryptor()
+            continue
+        c.s.close(); return f"unexpected packet {pid}"
+    c.s.close(); return "no answer"
+
+
 APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel", "updates"]
 
 SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
@@ -711,7 +788,7 @@ def scenario_testing():
     subprocess.run(["mcopy", "-i", usb, os.path.join(outdir, "hello.txt"), "::HELLO.TXT"], check=True)
     # the USB controller and the stick's disk exist from the start; the stick itself is plugged in later with device_add
     vm = VM("testing", cdrom=iso, mem=3072, extra=["-device", "qemu-xhci,id=xhci", "-drive", f"if=none,id=usbd,file={usb},format=raw",
-                                                      "-netdev", "user,id=n0,hostfwd=tcp::2222-:22,hostfwd=tcp::8081-:8080,hostfwd=tcp::8090-:8090", "-device", "e1000e,netdev=n0"])   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
+                                                      "-netdev", "user,id=n0,hostfwd=tcp::2222-:22,hostfwd=tcp::8081-:8080,hostfwd=tcp::8090-:8090,hostfwd=tcp::25565-:25565", "-device", "e1000e,netdev=n0"])   # no disk at all; more RAM, because the live system keeps its files in RAM (about 40% of it) and Java is big
     try:
         step("testing: installer is up", vm.wait_for(r"EXEC85_SCREEN installer", 600 if SLOW else 120) is not None)
         press(vm, "ret", I, step="theme")
@@ -959,6 +1036,36 @@ def scenario_testing():
             except AssertionError:
                 dump_file(vm, f"/tmp/{kind}.txt", 6)
                 raise
+
+        # A real Paper server, and a client that logs in to it: Java used to crash (SIGSEGV in native code) the moment a player joined
+        terminal_run(vm, "mc stop craft; sleep 3; echo PS$((5-3))", "PS2", 120, "paper login: the other test server is stopped to free the port")
+        terminal_run(vm, "echo eula=true > /srv/minecraft/paper1/eula.txt; printf 'online-mode=false\\nnetwork-compression-threshold=64\\n' > /srv/minecraft/paper1/server.properties; svc start paper1; echo PV$((5-3))", "PV2", 60, "paper login: the Paper server is started (offline mode first, so the compression code runs)")
+        wait_done = "for i in $(seq 1 120); do mc log paper1 | grep -q 'Done (' && break; sleep 3; done; mc log paper1 | grep -c 'Done ('; echo PD$((5-3))"
+        try: terminal_run(vm, wait_done, "re:[1-9]\\d*\\s*PD2", 480, "paper login: the Paper server finishes starting")
+        except AssertionError:
+            terminal_run(vm, "mc log paper1 | tail -3 | cut -c1-66; echo PL$((5-3))", "PL2", 20, "diagnostic"); print("PAPERLOG>", app_line(vm, "terminal", 1), flush=True)
+            raise
+        info = None
+        try: info = mc_status(25565)
+        except Exception as e: step("paper login: the server answers a status request", False, repr(e))
+        proto = info["version"]["protocol"]
+        step("paper login: the server answers a status request", True, info["version"]["name"])
+        try: r = mc_login(25565, proto, False)
+        except Exception as e: r = "error: " + repr(e)
+        step("paper login: a player logs in over a compressed connection", r == "success", r)
+        terminal_run(vm, "ls /srv/minecraft/paper1 | grep -c hs_err; echo PH$((5-3))", "re:0\\s*PH2", 30, "paper login: Java did not crash (no hs_err report)")
+        # now with the encryption of the real game (online mode): the login is refused later, because the player is not real, but Java must stay up
+        terminal_run(vm, "mc stop paper1; sleep 4; sed -i 's/online-mode=false/online-mode=true/' /srv/minecraft/paper1/server.properties; svc start paper1; echo PO$((5-3))", "PO2", 120, "paper login: the server is restarted in online mode (encrypted logins)")
+        terminal_run(vm, wait_done, "re:[1-9]\\d*\\s*PD2", 480, "paper login: the online-mode server finishes starting")
+        try: r = mc_login(25565, proto, True)
+        except Exception as e: r = "error: " + repr(e)
+        step("paper login: an encrypted login is handled (and refused, the player is not real)", r.startswith("disconnected") or r == "success", r)
+        terminal_run(vm, "sleep 2; ls /srv/minecraft/paper1 | grep -c hs_err; echo PI$((5-3))", "re:0\\s*PI2", 30, "paper login: Java did not crash on the encrypted login either")
+        try: mc_status(25565); alive = True
+        except Exception: alive = False
+        step("paper login: the server is still answering afterwards", alive)
+        terminal_run(vm, "mc stop paper1; echo PX$((5-3))", "PX2", 60, "paper login: the Paper server is stopped again")
+
 
         # Discord bots, Python and Node.js, installed for real with a fake token: the real library must run and refuse the token
         FAKE = "fake-token-for-tests-only-0123456789"
