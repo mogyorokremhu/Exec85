@@ -175,7 +175,7 @@ fn dropdown(p: &mut Painter, app: &App, ms: app::MenuState) {
     }
 }
 
-const KEYS_HELP: [&str; 13] = [
+const KEYS_HELP: [&str; 14] = [
     "F10 or Alt+letter   Open the menu bar",
     "Up Down PgUp PgDn   Move through the list",
     "Home End            First / last item",
@@ -185,6 +185,7 @@ const KEYS_HELP: [&str; 13] = [
     "Tab / Shift+Tab     Next / previous pane",
     "Alt+Left/Right      Switch drive",
     "F5                  Refresh",
+    "F11 / F12           Darker / brighter screen",
     "Ctrl+H              Show or hide hidden files",
     "Ctrl+L              Stack or side-by-side panes",
     "Ctrl+D              Show or hide the details pane",

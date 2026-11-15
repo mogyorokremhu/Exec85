@@ -67,6 +67,7 @@ impl Session {
         let m = Metrics::for_height(h);
         let mut shell = Shell::new(w / m.cw, h / m.ch, crate::read_mode(), start, home, wake);
         shell.app.sleep_minutes = 0;          // a remote screen never goes dark
+        shell.app.brightness = crate::brightness_status().1;
         let extra = format!(" user={user} uid={} host={} remote=yes", crate::sys::uid(), crate::hostname());
         let mut s = Session { shell, canvas: Canvas::new(w, h), m, enc: rframe::Encoder::new(), extra };
         s.draw();
@@ -142,6 +143,7 @@ pub fn run(w: usize, h: usize) -> ! {
                 Effect::Reboot => ("reboot", crate::supervisor::EXIT_REBOOT),
                 Effect::SaveTheme(m) => { crate::save_theme(m); continue; }
                 Effect::SaveSleep(m) => { crate::save_sleep(m); continue; }
+                Effect::SetBrightness(p) => { let _ = crate::helper::call(&["brightness-set", &p.to_string()]); continue; }   // the screen of the computer itself
                 _ => continue,
             };
             send(&mut stdout, vec![rframe::message(rframe::KIND_BYE, word.as_bytes())]);

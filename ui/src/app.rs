@@ -24,11 +24,12 @@ pub enum Act {
     NextPane, Stacked, Details,
     Keys, About, Sep,
     Sleep, SleepIn(u32),
+    BrightnessUp, BrightnessDown, Brightness(u32),
 }
 
 /// Things the shell asks the outside world (or the window manager) to do.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Effect { PowerOff, Reboot, Logout, SaveTheme(Mode), OpenApp(Kind), OpenFile(PathBuf), CloseWindow(usize), Eject(PathBuf), Sleep, SaveSleep(u32), ScreenPower(bool) }
+pub enum Effect { PowerOff, Reboot, Logout, SaveTheme(Mode), OpenApp(Kind), OpenFile(PathBuf), CloseWindow(usize), Eject(PathBuf), Sleep, SaveSleep(u32), ScreenPower(bool), SetBrightness(u32) }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum PromptKind { NewFile, NewFolder, Rename(String) }
@@ -57,6 +58,8 @@ pub const MENUS: [MenuDef; 5] = [
         it("", "", Act::Sep), it("Show hidden files", "Ctrl+H", Act::Hidden),
         it("", "", Act::Sep), it("Sleep now (screen off)", "F8", Act::Sleep),
         it("Sleep after 5 minutes", "", Act::SleepIn(5)), it("Sleep after 15 minutes", "", Act::SleepIn(15)), it("Sleep after 60 minutes", "", Act::SleepIn(60)), it("Never sleep by itself", "", Act::SleepIn(0)),
+        it("", "", Act::Sep), it("Brighter", "F12", Act::BrightnessUp), it("Darker", "F11", Act::BrightnessDown),
+        it("Brightness 100%", "", Act::Brightness(100)), it("Brightness 70%", "", Act::Brightness(70)), it("Brightness 40%", "", Act::Brightness(40)), it("Brightness 20%", "", Act::Brightness(20)),
     ]},
     MenuDef { title: "Apps", hot: 'a', items: &[
         it("Notepad", "", Act::OpenApp(Kind::Notepad)), it("Terminal (Cmd)", "", Act::OpenApp(Kind::Terminal)),
@@ -106,6 +109,8 @@ pub struct App {
     pub clipboard: Option<(PathBuf, bool)>,
     /// Minutes without a key before the screen turns off by itself (0 = never).
     pub sleep_minutes: u32,
+    /// Screen brightness in percent (10 to 100).
+    pub brightness: u32,
     pub asleep: bool,
     /// One-line message for the status bar (errors, hints); cleared by the next key.
     pub msg: Option<String>,
@@ -116,7 +121,7 @@ impl App {
         let mut a = App {
             cols, rows, mode, drives: fs::drives(), drive_cursor: 0, cwd: PathBuf::from("/"), entries: Vec::new(),
             sel: 0, top: 0, sort: Sort::Name, show_hidden: false, focus: Focus::Files, stacked: false, details: true,
-            menu: None, dialog: None, app_count: 0, clipboard: None, sleep_minutes: 0, asleep: false, msg: None,
+            menu: None, dialog: None, app_count: 0, clipboard: None, sleep_minutes: 0, brightness: 100, asleep: false, msg: None,
         };
         if !a.open_dir(start, None) { a.open_dir(PathBuf::from("/"), None); a.msg = None; }
         a
@@ -288,7 +293,7 @@ impl App {
 
     /// Keys that always belong to the shell, even when an app window has the focus.
     pub fn is_global(k: &Key) -> bool {
-        if matches!(k.code, code::F1 | code::F4 | code::F6 | code::F8 | code::F10) { return true; }
+        if matches!(k.code, code::F1 | code::F4 | code::F6 | code::F8 | code::F10 | code::F11 | code::F12 | code::BRIGHT_DOWN | code::BRIGHT_UP) { return true; }
         k.alt && !k.ctrl && k.base_char().map_or(false, |c| MENUS.iter().any(|m| m.hot == c))
     }
 
@@ -337,6 +342,7 @@ impl App {
             Act::SortDate => self.sort == Sort::Date,
             Act::Hidden => self.show_hidden,
             Act::SleepIn(m) => self.sleep_minutes == m,
+            Act::Brightness(p) => self.brightness == p,
             Act::Stacked => self.stacked,
             Act::Details => self.details,
             _ => return None,
@@ -382,6 +388,8 @@ impl App {
                 self.fix_scroll();
             }
             Act::Sleep => return Some(Effect::Sleep),
+            Act::BrightnessUp | Act::BrightnessDown => { self.brightness = crate::brightness::step(self.brightness, act == Act::BrightnessUp); self.msg = Some(format!("Brightness {}%", self.brightness)); return Some(Effect::SetBrightness(self.brightness)); }
+            Act::Brightness(p) => { self.brightness = p; return Some(Effect::SetBrightness(p)); }
             Act::SleepIn(m) => { self.sleep_minutes = m; return Some(Effect::SaveSleep(m)); }
             Act::Keys => self.dialog = Some(Dialog::Keys),
             Act::About => self.dialog = Some(Dialog::About),
@@ -431,6 +439,8 @@ impl App {
             code::F1 => return self.run(Act::Keys),
             code::F5 => return self.run(Act::Refresh),
             code::F8 => return self.run(Act::Sleep),
+            code::F11 | code::BRIGHT_DOWN => return self.run(Act::BrightnessDown),
+            code::F12 | code::BRIGHT_UP => return self.run(Act::BrightnessUp),
             code::TAB if !matches!(self.focus, Focus::App(_)) => { self.next_pane(if k.shift { -1 } else { 1 }); return None; }
             _ => {}
         }
@@ -862,5 +872,29 @@ mod tests {
         assert!(s.contains(" index=0 name=.. count=5 "));
         assert!(s.contains(" theme=dark ") && s.contains(" focus=files "));
         let _ = stdfs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn brightness_keys_and_menu_change_the_setting_in_steps_of_ten() {
+        let root = tree("bright");
+        let mut a = app(&root);
+        assert_eq!(a.brightness, 100);
+        assert_eq!(press(&mut a, "f11"), vec![Effect::SetBrightness(90)]);
+        assert_eq!(press(&mut a, "f11"), vec![Effect::SetBrightness(80)]);
+        assert_eq!(press(&mut a, "f12"), vec![Effect::SetBrightness(90)]);
+        assert_eq!(a.brightness, 90);
+        assert_eq!(a.checked(Act::Brightness(90)), Some(true));
+        assert_eq!(a.checked(Act::Brightness(40)), Some(false));
+        for _ in 0..20 { press(&mut a, "f12"); }
+        assert_eq!(a.brightness, 100, "no brighter than full");
+        for _ in 0..20 { press(&mut a, "f11"); }
+        assert_eq!(a.brightness, 10, "never fully dark");
+        // the sun keys of a laptop do the same, with no matching named key
+        let up = Key::new(crate::keys::code::BRIGHT_UP); let down = Key::new(crate::keys::code::BRIGHT_DOWN);
+        assert_eq!(a.handle(up), Some(Effect::SetBrightness(20)));
+        assert_eq!(a.handle(down), Some(Effect::SetBrightness(10)));
+        assert!(App::is_global(&up) && App::is_global(&down), "they work inside an app window too");
+        assert_eq!(a.run(Act::Brightness(70)), Some(Effect::SetBrightness(70)));
+        assert_eq!(a.brightness, 70);
     }
 }

@@ -6,6 +6,7 @@
 //!   --ppm FILE   draw the shell into an image file (testing)
 mod account;
 mod audio;
+mod brightness;
 mod bot;
 mod app;
 mod apps;
@@ -322,6 +323,13 @@ fn stage_installer() -> ! {
     }
 }
 
+/// (has a backlight, saved percent) from the helper; full brightness without a backlight when the helper does not answer.
+fn brightness_status() -> (bool, u32) {
+    let t = helper::call(&["brightness-status"]).unwrap_or_default();
+    let get = |k: &str| t.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or("").trim().to_string();
+    (get("hw") == "yes", get("percent").parse().ok().filter(|p| (brightness::MIN..=brightness::MAX).contains(p)).unwrap_or(brightness::MAX))
+}
+
 fn stage_shell() -> ! {
     load_layout();
     let mut s = Screen::open();
@@ -339,8 +347,12 @@ fn stage_shell() -> ! {
     let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || { let _ = wake_tx.send(Event::Wake); });
     let mut shell = shell::Shell::new(cols, rows, read_mode(), start, home, wake);
     shell.app.sleep_minutes = read_sleep();
+    // brightness: with a backlight the helper sets it; without one we darken the picture ourselves
+    let (mut hw_backlight, saved) = brightness_status();
+    shell.app.brightness = saved;
 
     ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m);
+    if !hw_backlight { brightness::dim(&mut s.canvas.px, shell.app.brightness); }
     s.show();
     announce("shell", &s);
     for l in shell.state_lines(&extra) { log(&l); }
@@ -358,7 +370,7 @@ fn stage_shell() -> ! {
         shell.tick();
         effects.extend(shell.take_effects());
         // While asleep the screen shows nothing at all (and the display is switched off below).
-        if shell.app.asleep { let (w, h) = (s.canvas.w, s.canvas.h); s.canvas.fill_rect(0, 0, w, h, 0); } else { ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m); }
+        if shell.app.asleep { let (w, h) = (s.canvas.w, s.canvas.h); s.canvas.fill_rect(0, 0, w, h, 0); } else { ui::draw(&shell.app, &shell.windows, &mut s.canvas, &s.m); if !hw_backlight { brightness::dim(&mut s.canvas.px, shell.app.brightness); } }
         s.show();
         let lines = if from_key { shell.state_lines(&extra) } else { shell.changed_state_lines(&extra) };
         for l in lines { log(&l); }
@@ -366,6 +378,7 @@ fn stage_shell() -> ! {
             match e {
                 Effect::SaveTheme(m) => save_theme(m),
                 Effect::SaveSleep(m) => save_sleep(m),
+                Effect::SetBrightness(p) => { if let Ok(t) = helper::call(&["brightness-set", &p.to_string()]) { hw_backlight = t.contains("hw=yes"); } }
                 Effect::ScreenPower(on) => { let _ = helper::call(&["screen-power", if on { "on" } else { "off" }]); }
                 Effect::Logout => std::process::exit(supervisor::EXIT_LOGOUT),
                 Effect::PowerOff => std::process::exit(supervisor::EXIT_POWEROFF),
@@ -436,7 +449,7 @@ fn main() {
     if let Some(name) = args.first().and_then(|a| Path::new(a).file_name()).map(|n| n.to_string_lossy().into_owned()) {
         if let Some(code) = cmds::run(&name, &args[1..]) { std::process::exit(code); }
         // `svc` and `pkg` are short forms of `exec85 --svc` and `exec85 --pkg`.
-        if name == "svc" || name == "pkg" || name == "mc" || name == "bot" || name == "fw" || name == "app" || name == "sites" || name == "browse" || name == "health" || name == "logs" || name == "tunnel" || name == "webaccess" || name == "update" {
+        if name == "svc" || name == "pkg" || name == "mc" || name == "bot" || name == "fw" || name == "app" || name == "sites" || name == "browse" || name == "health" || name == "logs" || name == "tunnel" || name == "webaccess" || name == "brightness" || name == "update" {
             let mut a = vec![format!("--{}", if name == "browse" { "web" } else { name.as_str() })];
             a.extend(args[1..].iter().cloned());
             std::process::exit(helper::cli(&a));

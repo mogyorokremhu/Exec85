@@ -25,6 +25,11 @@ pub mod code {
     pub const F7: u16 = 65;
     pub const F8: u16 = 66;
     pub const F10: u16 = 68;
+    pub const F11: u16 = 87;
+    pub const F12: u16 = 88;
+    /// The brightness keys of a laptop (Fn + the sun symbols).
+    pub const BRIGHT_DOWN: u16 = 224;
+    pub const BRIGHT_UP: u16 = 225;
     pub const HOME: u16 = 102;
     pub const UP: u16 = 103;
     pub const PGUP: u16 = 104;

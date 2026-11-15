@@ -264,6 +264,8 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "update-good" => crate::update::mark_good(ctx),
         "update-config" => { crate::update::set_conf(ctx, arg(1)?, w.get(2).map(String::as_str).unwrap_or(""))?; Ok("Saved.".into()) }
         "tunnel-status" => Ok(crate::tunnel::status(ctx)),
+        "brightness-status" => Ok(crate::brightness::status(ctx)),
+        "brightness-set" => crate::brightness::set(ctx, arg(1)?.parse().map_err(|_| "Brightness is a number from 10 to 100.".to_string())?),
         "web-status" => Ok(crate::webaccess::status(ctx)),
         "web-enable" => crate::webaccess::enable(ctx),
         "web-disable" => crate::webaccess::disable(ctx),
@@ -535,6 +537,7 @@ pub fn serve() -> ! {
     std::thread::spawn(report_loop);
     std::thread::spawn(usb_watch);
     std::thread::spawn(update_watch);
+    crate::brightness::restore(&Ctx { root: Path::new("/"), runner: &SysRunner });
     if !crate::supervisor::cmdline_has("exec85.live") { crate::mc::migrate_services(&Ctx { root: Path::new("/"), runner: &SysRunner }); }
     let _ = fw_apply(&Ctx { root: Path::new("/"), runner: &SysRunner });   // make sure the rules match the services that exist
     for c in l.incoming().flatten() { std::thread::spawn(move || serve_one(c)); }
@@ -627,6 +630,8 @@ pub fn cli(args: &[String]) -> i32 {
         ["--health"] => { let be: crate::apps::Backend = std::sync::Arc::new(|w: &[String]| { let r: Vec<&str> = w.iter().map(String::as_str).collect(); call(&r) }); crate::apps::health::report(&be, &mut std::io::stdout()); 0 }
         ["--logs"] => show(call(&["log-list"])),
         ["--logs", name] => show(call(&["log-tail", name, "40"])),
+        ["--brightness"] | ["--brightness", "status"] => show(call(&["brightness-status"])),
+        ["--brightness", n] => show(call(&["brightness-set", n])),
         ["--webaccess"] | ["--webaccess", "status"] => show(call(&["web-status"])),
         ["--webaccess", on_off @ ("on" | "off")] => show(call(&[if *on_off == "on" { "web-enable" } else { "web-disable" }])),
         ["--update"] | ["--update", "status"] => show(call(&["update-status"])),

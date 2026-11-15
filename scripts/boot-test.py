@@ -528,6 +528,9 @@ def scenario_webaccess(disk):
     vm = VM("webaccess", disk=disk, extra=["-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:8443-:8443", "-device", "e1000e,netdev=n0"])
     try:
         login_tester(vm)
+        terminal_run(vm, "brightness 60 > /dev/null 2>&1; brightness | grep -c percent=60; echo BR$((5-3))", "re:[1-9]\\s*BR2", 60, "brightness: the setting is saved (a virtual machine has no backlight, so the picture is darkened)")
+        terminal_run(vm, "brightness | grep -c hw=no; brightness 100 > /dev/null 2>&1; brightness | grep -c percent=100; echo BS$((5-3))", "re:1.?1.?BS2", 60, "brightness: no backlight is reported, and full brightness can be set again")
+        terminal_run(vm, "brightness 5; echo BX=$?", "re:BX=[1-9]", 60, "brightness: a value that is too low is refused")
         terminal_run(vm, "webaccess on > /tmp/w.txt 2>&1; echo W$((5-3))", "W2", 240, "web access: it is switched on")
         terminal_run(vm, "sleep 3; svc list | grep -c -E 'webaccess(-tls)? running'; echo WS$((5-3))", "re:2.?WS2", 60, "web access: both services run")
         ok = True
