@@ -16,9 +16,11 @@ fn dir(ctx: &Ctx) -> PathBuf { ctx.root.join(DIR) }
 fn cert(ctx: &Ctx) -> PathBuf { dir(ctx).join("cert.pem") }
 fn key(ctx: &Ctx) -> PathBuf { dir(ctx).join("key.pem") }
 fn conf(ctx: &Ctx) -> PathBuf { dir(ctx).join("stunnel.conf") }
-fn conf_text() -> String {
-    format!("foreground = yes\npid =\noutput = /var/log/exec85/{TLS}.stunnel.log\n\n[exec85-web]\naccept = {}\nconnect = 127.0.0.1:{}\ncert = /{DIR}/cert.pem\nkey = /{DIR}/key.pem\nprotocol = proxy\nsslVersion = all\noptions = NO_SSLv2\noptions = NO_SSLv3\noptions = NO_TLSv1\noptions = NO_TLSv1.1\n", crate::remote::PUBLIC_PORT, crate::remote::LISTEN_PORT)
+/// The stunnel configuration. `dir` is where the certificate and key are (and, in tests, a folder of their own).
+fn conf_text_in(dir: &str, accept: u16, connect: u16, log: &str) -> String {
+    format!("foreground = yes\npid =\noutput = {log}\n\n[exec85-web]\naccept = {accept}\nconnect = 127.0.0.1:{connect}\ncert = {dir}/cert.pem\nkey = {dir}/key.pem\nprotocol = proxy\nsslVersionMin = TLSv1.2\n")
 }
+fn conf_text() -> String { conf_text_in(&format!("/{DIR}"), crate::remote::PUBLIC_PORT, crate::remote::LISTEN_PORT, &format!("/var/log/exec85/{TLS}.stunnel.log")) }
 
 pub fn enabled(ctx: &Ctx) -> bool { ctx.root.join("etc/exec85/services").join(format!("{WEB}.conf")).exists() && ctx.root.join("etc/exec85/services").join(format!("{TLS}.conf")).exists() }
 
@@ -130,7 +132,7 @@ mod tests {
         let web = std::fs::read_to_string(r.join("etc/exec85/services/webaccess.conf")).unwrap();
         assert!(tls.contains("ports=8443/tcp") && tls.contains("command=stunnel /etc/exec85/webaccess/stunnel.conf") && web.contains("command=/usr/bin/exec85 --remote") && web.contains("ports=\n"), "{tls}\n{web}");
         let sc = std::fs::read_to_string(r.join("etc/exec85/webaccess/stunnel.conf")).unwrap();
-        assert!(sc.contains("accept = 8443") && sc.contains("connect = 127.0.0.1:8442") && sc.contains("NO_TLSv1.1"), "{sc}");
+        assert!(sc.contains("accept = 8443") && sc.contains("connect = 127.0.0.1:8442") && sc.contains("sslVersionMin = TLSv1.2") && sc.contains("protocol = proxy"), "{sc}");
         assert!(status(&c).contains("enabled=yes") && status(&c).contains("fingerprint=AB:CD:EF"));
         for n in ["webaccess", "webaccess-tls"] { assert!(calls.contains(&format!("rc-service exec85-{n} restart")), "{n}: {calls}"); }
         // again: the certificate is kept (browsers remember it)
@@ -155,5 +157,28 @@ mod tests {
         let e = enable(&Ctx { root: &r2, runner: &f2 }).unwrap_err();
         assert!(e.contains("connected to the internet") && !enabled(&Ctx { root: &r2, runner: &f2 }), "{e}");
         let _ = (std::fs::remove_dir_all(&r), std::fs::remove_dir_all(&r2));
+    }
+
+    /// The real stunnel must accept the configuration (it quits at start-up on any option it does not know).
+    /// Skipped where stunnel and openssl are not installed (the unit-test job of CI installs them).
+    #[test]
+    fn the_real_stunnel_accepts_the_configuration_and_listens() {
+        let have = |p: &str| std::process::Command::new(p).arg("version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok() || std::process::Command::new(p).arg("-version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok();
+        if !have("stunnel") || !have("openssl") { eprintln!("stunnel or openssl missing: skipped"); return; }
+        let d = std::env::temp_dir().join(format!("exec85-stunnel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap();
+        let ds = d.to_str().unwrap();
+        let ok = std::process::Command::new("openssl").args(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "2", "-subj", "/CN=lab85", "-addext", "subjectAltName=DNS:lab85,DNS:lab85.local", "-keyout", &format!("{ds}/key.pem"), "-out", &format!("{ds}/cert.pem")]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().unwrap().success();
+        assert!(ok, "the certificate command we use works");
+        let port = { let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap(); l.local_addr().unwrap().port() };
+        let conf = d.join("stunnel.conf");
+        std::fs::write(&conf, conf_text_in(ds, port, 9, &format!("{ds}/stunnel.log"))).unwrap();
+        let mut child = std::process::Command::new("stunnel").arg(&conf).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let mut up = false;
+        for _ in 0..50 { if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; } if child.try_wait().unwrap().is_some() { break; } std::thread::sleep(std::time::Duration::from_millis(100)); }
+        let log = std::fs::read_to_string(d.join("stunnel.log")).unwrap_or_default();
+        let _ = child.kill(); let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(up, "stunnel did not start with our configuration: {log}");
     }
 }

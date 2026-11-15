@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install stunnel (one test starts the real program with our configuration)
+        run: sudo apt-get install -y stunnel4 openssl >/dev/null
       - run: cargo test --manifest-path ui/Cargo.toml
 
   build-iso:
