@@ -465,7 +465,7 @@ def scenario_update(disk):
     vm = VM("update-trial", disk=disk)
     try:
         login_tester(vm)
-        terminal_run(vm, "echo $(cat /etc/exec85/package-version) $(cat /home/tester/keepme) V$((5-3))", "re:99.0.0\\s*kept\\s*V2", 30, "update trial: the new version runs and the user's data is untouched")
+        terminal_run(vm, "echo $(cat /etc/exec85/package-version) $(cat /home/tester/keepme) V$((5-3))", "re:99\\.0\\.0.kept.V2", 30, "update trial: the new version runs and the user's data is untouched")
         terminal_run(vm, "svc list | grep -c ticker; echo SV$((5-3))", "re:[1-9]\\s*SV2", 60, "update trial: the user's service is still defined")
         terminal_run(vm, "update config good_after 5; sleep 20; update status | grep -c 'pending=no'; echo G$((5-3))", "re:[1-9]\\s*G2", 90, "update trial: after running well the new version is made final")
         terminal_run(vm, "update status | grep -c 'menu_timeout=0'; echo T$((5-3))", "re:[1-9]\\s*T2", 30, "update trial: the boot menu is hidden again")
@@ -478,7 +478,7 @@ def scenario_update(disk):
     vm = VM("update-previous", disk=disk)
     try:
         login_tester(vm)
-        terminal_run(vm, "echo $(test -e /usr/share/exec85/marker || echo GONE$((1+1))) $(grep -c 99.0.0 /etc/exec85/package-version) B$((5-3))", "re:GONE2\\s*0\\s*B2", 60, "previous: the update's files are gone again")
+        terminal_run(vm, "echo $(test -e /usr/share/exec85/marker || echo GONE$((1+1))) $(grep -c 99.0.0 /etc/exec85/package-version) B$((5-3))", "re:GONE2.0.B2", 60, "previous: the update's files are gone again")
         terminal_run(vm, "cat /home/tester/keepme; echo KK$((5-3))", "re:kept\\s*KK2", 30, "previous: the user's data is still there")
         terminal_run(vm, "update status | grep -c 'pending=no'; echo N$((5-3))", "re:[1-9]\\s*N2", 30, "previous: nothing is left pending")
     finally:
