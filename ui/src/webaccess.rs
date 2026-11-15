@@ -17,7 +17,7 @@ fn cert(ctx: &Ctx) -> PathBuf { dir(ctx).join("cert.pem") }
 fn key(ctx: &Ctx) -> PathBuf { dir(ctx).join("key.pem") }
 fn conf(ctx: &Ctx) -> PathBuf { dir(ctx).join("stunnel.conf") }
 /// The stunnel configuration. `dir` is where the certificate and key are (and, in tests, a folder of their own).
-fn conf_text_in(dir: &str, accept: u16, connect: u16, log: &str) -> String {
+pub(crate) fn conf_text_in(dir: &str, accept: u16, connect: u16, log: &str) -> String {
     format!("foreground = yes\npid =\noutput = {log}\n\n[exec85-web]\naccept = {accept}\nconnect = 127.0.0.1:{connect}\ncert = {dir}/cert.pem\nkey = {dir}/key.pem\nprotocol = proxy\nsslVersionMin = TLSv1.2\n")
 }
 fn conf_text() -> String { conf_text_in(&format!("/{DIR}"), crate::remote::PUBLIC_PORT, crate::remote::LISTEN_PORT, &format!("/var/log/exec85/{TLS}.stunnel.log")) }
@@ -39,7 +39,7 @@ pub fn status(ctx: &Ctx) -> String {
 
 fn have(ctx: &Ctx, prog: &str) -> bool { ["usr/bin", "usr/sbin", "bin", "sbin"].iter().any(|d| ctx.root.join(d).join(prog).exists()) }
 
-fn make_certificate(ctx: &Ctx) -> Result<(), String> {
+pub(crate) fn make_certificate(ctx: &Ctx) -> Result<(), String> {
     if cert(ctx).exists() && key(ctx).exists() { return Ok(()); }
     std::fs::create_dir_all(dir(ctx)).map_err(|e| e.to_string())?;
     let host = std::fs::read_to_string(ctx.root.join("etc/hostname")).map(|s| s.trim().to_string()).ok().filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).unwrap_or_else(|| "exec85".into());
@@ -58,13 +58,18 @@ fn def(name: &str, description: &str, command: &str, ports: &str) -> ServiceDef 
     ServiceDef { name: name.into(), description: description.into(), command: command.into(), dir: "/".into(), user: "root".into(), env: vec![], autostart: true, ports: ports.into() }
 }
 
-pub fn enable(ctx: &Ctx) -> Result<String, String> {
+/// stunnel and openssl present, and the certificate made (shared by everything that offers a web page).
+pub(crate) fn prepare_tls(ctx: &Ctx) -> Result<(), String> {
     if !have(ctx, "stunnel") || !have(ctx, "openssl") {
         // an update does not bring new packages: they come from the internet, once
         let (code, out) = ctx.runner.run("apk", &["add", "--no-progress", "stunnel", "openssl"]);
-        if code != 0 { return Err(format!("Web access needs two small programs (stunnel and openssl) and they could not be downloaded. Is this computer connected to the internet? {}", out.lines().last().unwrap_or("").trim())); }
+        if code != 0 { return Err(format!("This needs two small programs (stunnel and openssl) and they could not be downloaded. Is this computer connected to the internet? {}", out.lines().last().unwrap_or("").trim())); }
     }
-    make_certificate(ctx)?;
+    make_certificate(ctx)
+}
+
+pub fn enable(ctx: &Ctx) -> Result<String, String> {
+    prepare_tls(ctx)?;
     std::fs::write(conf(ctx), conf_text()).map_err(|e| e.to_string())?;
     for d in [def(WEB, "Exec85 web access (the screen in a browser)", &format!("/usr/bin/exec85 --remote"), ""),
               def(TLS, "Exec85 web access, encryption", &format!("stunnel /{DIR}/stunnel.conf"), &format!("{}/tcp", crate::remote::PUBLIC_PORT))] {

@@ -541,7 +541,7 @@ def scenario_webaccess(disk):
                 if text in a[1]: return a
             time.sleep(1)
         return None
-    vm = VM("webaccess", disk=disk, extra=["-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:8443-:8443", "-device", "e1000e,netdev=n0"])
+    vm = VM("webaccess", disk=disk, extra=["-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:8443-:8443,hostfwd=tcp:127.0.0.1:8445-:8445", "-device", "e1000e,netdev=n0"])
     try:
         login_tester(vm)
         terminal_run(vm, "brightness 60 > /dev/null 2>&1; brightness | grep -c percent=60; echo BR$((5-3))", "re:[1-9]\\s*BR2", 60, "brightness: the setting is saved (a virtual machine has no backlight, so the picture is darkened)")
@@ -622,6 +622,45 @@ def scenario_webaccess(disk):
             terminal_run(vm, "webaccess on > /dev/null 2>&1; echo W1$((5-3))", "W12", 240, "monitor: the watched service is switched on again")
             a = wait_alert("back UP", 150); step("monitor: the phone is told the site is back up", a is not None and "127.0.0.1:8442" in a[1], repr(alerts))
             terminal_run(vm, "sitewatch off > /dev/null 2>&1; sitewatch remove s1 > /dev/null 2>&1; sitewatch list | grep -c site; echo SX$((5-3))", "re:0\\s*SX2", 60, "monitor: it can be switched off and the site removed")
+        if ok:
+            # the photo and video gallery: only the chosen folder, only pictures and videos, only with the password
+            terminal_run(vm, "mkdir -p /home/tester/gal/trip; printf PNGDATA > /home/tester/gal/a.png; printf 0123456789MOVIE > /home/tester/gal/movie.mp4; echo hi > /home/tester/gal/notes.txt; echo WEBP > /home/tester/gal/trip/c.webp; echo GA$((5-3))", "GA2", 120, "gallery: a folder with pictures, a video and a private note is made")
+            terminal_run(vm, "ln -s /etc/passwd /home/tester/gal/leak.png; ln -s /etc /home/tester/gal/etcdir; echo GL$((5-3))", "GL2", 60, "gallery: links that lead out of the folder are made (they must stay invisible)")
+            terminal_run(vm, "gallery folder /home/tester/gal > /dev/null 2>&1; gallery password test-pass-9 > /dev/null 2>&1; gallery status | grep -c -E 'folder=/home/tester/gal|password=set|user=tester'; echo GB$((5-3))", "re:3.?GB2", 120, "gallery: the folder (owned by the normal user) and the password are saved")
+            terminal_run(vm, "gallery on > /tmp/g.txt 2>&1; echo GC$((5-3))", "GC2", 240, "gallery: it is switched on")
+            try:
+                def gcall(method, path, body=None, headers=None):
+                    c = http.client.HTTPSConnection("127.0.0.1", 8445, context=ctx, timeout=30); h = {"X-Exec85": "1"}; h.update(headers or {})
+                    c.request(method, path, body=body, headers=h); r = c.getresponse(); data = r.read(); return r.status, dict((k.lower(), v) for k, v in r.getheaders()), data
+                st, hd, body = gcall("GET", "/"); step("gallery: the page is served over HTTPS", st == 200 and b"Photo gallery" in body)
+                step("gallery: nothing without the password", gcall("GET", "/api/list")[0] == 401 and gcall("GET", "/media/a.png")[0] == 401)
+                form = {"Content-Type": "application/x-www-form-urlencoded"}
+                step("gallery: a wrong password is refused", gcall("POST", "/api/login", "pass=nope", form)[0] == 401)
+                st, hd, body = gcall("POST", "/api/login", "pass=test-pass-9", form)
+                gck = {"Cookie": hd.get("set-cookie", "").split(";")[0]}
+                step("gallery: the right password opens it", st == 200 and "gsid=" in hd.get("set-cookie", ""), f"{st}")
+                st, _, body = gcall("GET", "/api/list?dir=", None, gck); lst = body.decode(errors="replace")
+                step("gallery: the list shows the pictures, the video and the folder", st == 200 and '"a.png"' in lst and '"movie.mp4"' in lst and '"trip"' in lst, lst[:200])
+                step("gallery: the private note and the links that lead out are not listed", "notes.txt" not in lst and "leak.png" not in lst and "etcdir" not in lst, lst[:200])
+                st, hd, body = gcall("GET", "/media/a.png", None, gck); step("gallery: a picture is served with its type", st == 200 and body == b"PNGDATA" and hd.get("content-type") == "image/png")
+                st, hd, body = gcall("GET", "/media/movie.mp4", None, {"Range": "bytes=2-5", **gck}); step("gallery: a video can be skipped through (partial content)", st == 206 and body == b"2345" and "bytes 2-5/15" in hd.get("content-range", ""), f"{st} {body!r}")
+                bad = ["/media/notes.txt", "/media/leak.png", "/media/etcdir/passwd", "/media/..%2f..%2fetc%2fpasswd", "/media/%2e%2e/%2e%2e/etc/passwd", "/media/trip/..%2fa.png", "/api/list?dir=..", "/api/list?dir=etcdir"]
+                outcomes = [(p, gcall("GET", p, None, gck)) for p in bad]
+                step("gallery: nothing outside the folder, no non-media file, and no link out can be reached", all(r[0] == 404 and b"root:" not in r[2] and b"hi" != r[2].strip() for _, r in outcomes), repr([(p, r[0]) for p, r in outcomes]))
+                st, _, body = gcall("POST", "/api/upload?dir=&name=n.png", b"NEWPNG", gck); step("gallery: adding from the browser is off until switched on", st == 403, f"{st}")
+            except Exception as e:
+                step("gallery: checks from outside", False, repr(e))
+                terminal_run(vm, "cat /tmp/g.txt | cut -c1-66; svc list | grep -c gallery; echo GD$((5-3))", "GD2", 30, "diagnostic"); print("DIAG-gallery>", app_line(vm, "terminal", 1), flush=True)
+                raise
+            terminal_run(vm, "gallery uploads on > /dev/null 2>&1; sleep 4; gallery status | grep -c uploads=yes; echo GU$((5-3))", "re:1.?GU2", 90, "gallery: adding from the browser is switched on")
+            st, hd, body = gcall("POST", "/api/login", "pass=test-pass-9", form); gck = {"Cookie": hd.get("set-cookie", "").split(";")[0]}
+            st, _, body = gcall("POST", "/api/upload?dir=&name=n.png", b"NEWPNG", gck); step("gallery: a picture can be added", st == 200 and b"n.png" in body, f"{st} {body[:80]!r}")
+            st, _, body = gcall("POST", "/api/upload?dir=&name=a.png", b"OVERWRITE", gck); step("gallery: an existing picture is never overwritten", st == 200 and b"a (2).png" in body, f"{st} {body[:80]!r}")
+            st, _, body = gcall("POST", "/api/upload?dir=&name=evil.html", b"<script>", gck); step("gallery: only pictures and videos can be added", st != 200)
+            terminal_run(vm, "ls /home/tester/gal | tr '\\n' ' '; echo", "re:n.png", 30, "gallery: the added picture is in the folder, owned by the normal user")
+            for i in range(5): gcall("POST", "/api/login", "pass=wrong%d" % i, form)
+            step("gallery: after five wrong passwords even the right one waits", gcall("POST", "/api/login", "pass=test-pass-9", form)[0] == 429)
+            terminal_run(vm, "gallery off > /dev/null 2>&1; svc list | grep -c gallery; echo GO$((5-3))", "re:0.?GO2", 90, "gallery: it can be switched off again")
         terminal_run(vm, "webaccess off > /dev/null 2>&1; svc list | grep -c webaccess; echo WO$((5-3))", "re:0.?WO2", 90, "web access: it can be switched off again")
     finally:
         vm.stop()
@@ -704,7 +743,7 @@ def mc_login(port, protocol, online):
     c.s.close(); return "no answer"
 
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel", "updates", "sitewatch"]
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel", "updates", "sitewatch", "gallery"]
 
 SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}

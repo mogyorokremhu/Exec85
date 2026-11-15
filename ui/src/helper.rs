@@ -264,6 +264,12 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "update-good" => crate::update::mark_good(ctx),
         "update-config" => { crate::update::set_conf(ctx, arg(1)?, w.get(2).map(String::as_str).unwrap_or(""))?; Ok("Saved.".into()) }
         "tunnel-status" => Ok(crate::tunnel::status(ctx)),
+        "gal-status" => Ok(crate::gallery::status(ctx)),
+        "gal-folder" => crate::gallery::set_folder(ctx, arg(1)?),
+        "gal-password" => crate::gallery::set_password(ctx, arg(1)?),
+        "gal-uploads" => crate::gallery::set_uploads(ctx, arg(1)? == "on"),
+        "gal-enable" => crate::gallery::enable(ctx),
+        "gal-disable" => crate::gallery::disable(ctx),
         "sw-status" => Ok(crate::sitewatch::status(ctx)),
         "sw-add" => crate::sitewatch::add_site(ctx, arg(1)?, arg(2).ok().and_then(|s| s.parse().ok()).unwrap_or(crate::sitewatch::DEFAULT_SECONDS)),
         "sw-remove" => crate::sitewatch::remove_site(ctx, arg(1)?),
@@ -637,6 +643,12 @@ pub fn cli(args: &[String]) -> i32 {
         ["--health"] => { let be: crate::apps::Backend = std::sync::Arc::new(|w: &[String]| { let r: Vec<&str> = w.iter().map(String::as_str).collect(); call(&r) }); crate::apps::health::report(&be, &mut std::io::stdout()); 0 }
         ["--logs"] => show(call(&["log-list"])),
         ["--logs", name] => show(call(&["log-tail", name, "40"])),
+        ["--gallery"] | ["--gallery", "status"] => show(call(&["gal-status"])),
+        ["--gallery", "folder", path] => show(call(&["gal-folder", path])),
+        ["--gallery", "password", pw] => show(call(&["gal-password", pw])),
+        ["--gallery", "password"] => { let mut l = String::new(); eprint!("New gallery password: "); let _ = std::io::stdin().read_line(&mut l); show(call(&["gal-password", l.trim_end_matches(['\n', '\r'])])) }
+        ["--gallery", "uploads", on_off @ ("on" | "off")] => show(call(&["gal-uploads", on_off])),
+        ["--gallery", on_off @ ("on" | "off")] => show(call(&[if *on_off == "on" { "gal-enable" } else { "gal-disable" }])),
         ["--sitewatch"] | ["--sitewatch", "list"] | ["--sitewatch", "status"] => show(call(&["sw-status"])),
         ["--sitewatch", "add", url] => show(call(&["sw-add", url])),
         ["--sitewatch", "add", url, every] => {

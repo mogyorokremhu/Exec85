@@ -118,13 +118,13 @@ pub fn valid_file_name(n: &str) -> bool {
 }
 pub fn valid_abs_path(p: &str) -> bool { p.starts_with('/') && p.len() <= 4000 && !p.contains(['\0', '\n', '\r']) }
 
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut o = String::from("\"");
     for c in s.chars() { match c { '"' => o.push_str("\\\""), '\\' => o.push_str("\\\\"), c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)), c => o.push(c) } }
     o.push('"'); o
 }
 
-fn random_token() -> String {
+pub(crate) fn random_token() -> String {
     let mut b = [0u8; 32];
     if let Ok(mut f) = std::fs::File::open("/dev/urandom") { let _ = f.read_exact(&mut b); }
     b.iter().map(|x| format!("{x:02x}")).collect()
