@@ -455,7 +455,7 @@ def scenario_update(disk):
         terminal_run(vm, "cat /tmp/u.txt | cut -c1-60; update status | grep -c 'version=99.0.0'; echo U$((5-3))", "re:[1-9]\\d*\\s*U2", 60, "update: the new version is installed")
         terminal_run(vm, "update status | grep -c 'pending=yes'; echo U$((6-3))", "re:[1-9]\\d*\\s*U3", 60, "update: it is on trial")
         terminal_run(vm, "cat /usr/share/exec85/marker; echo MK$((5-3))", "re:new\\s*MK2", 30, "update: the new files are in place")
-        terminal_run(vm, "grep -c 'timeout: 3' /boot/limine.conf; grep -c 'previous version' /boot/limine.conf; echo LM$((5-3))", "re:[1-9]\\s*[1-9]\\s*LM2", 30, "update: the boot menu offers the previous version")
+        terminal_run(vm, "update status | grep -c -e 'menu_timeout=3' -e 'menu_previous=yes'; echo LM$((5-3))", "re:2\\s*LM2", 30, "update: the boot menu offers the previous version")
         terminal_run(vm, "update apply /media/UPDUSB/exec85-update-test.tar.gz > /tmp/u2.txt 2>&1; echo UB=$?", "re:UB=[1-9]", 120, "update: the same version is refused a second time")
         restart_from_menu(vm, "update")
     finally:
@@ -468,7 +468,7 @@ def scenario_update(disk):
         terminal_run(vm, "cat /etc/exec85/package-version; cat /home/tester/keepme; echo V$((5-3))", "re:99.0.0\\s*kept\\s*V2", 30, "update trial: the new version runs and the user's data is untouched")
         terminal_run(vm, "svc list | grep -c ticker; echo SV$((5-3))", "re:[1-9]\\s*SV2", 60, "update trial: the user's service is still defined")
         terminal_run(vm, "update config good_after 5; sleep 20; update status | grep -c 'pending=no'; echo G$((5-3))", "re:[1-9]\\s*G2", 90, "update trial: after running well the new version is made final")
-        terminal_run(vm, "grep -c 'timeout: 0' /boot/limine.conf; echo T$((5-3))", "re:[1-9]\\s*T2", 30, "update trial: the boot menu is hidden again")
+        terminal_run(vm, "update status | grep -c 'menu_timeout=0'; echo T$((5-3))", "re:[1-9]\\s*T2", 30, "update trial: the boot menu is hidden again")
         terminal_run(vm, "update previous > /tmp/p.txt 2>&1; echo PV=$?", "PV=0", 60, "update: going back to the previous version is set up")
         restart_from_menu(vm, "update trial")
     finally:

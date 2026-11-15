@@ -176,7 +176,11 @@ pub fn available_version(ctx: &Ctx) -> Option<String> { std::fs::read_to_string(
 /// `version=… pending=yes|no previous=… available=… token=yes|no repo=… good_after=…`, one per line.
 pub fn status(ctx: &Ctx) -> String {
     let live = crate::supervisor::cmdline_has("exec85.live");
-    format!("version={}\nlive={}\npending={}\nprevious={}\navailable={}\ntoken={}\nrepo={}\ngood_after={}\n", current_version(ctx), if live { "yes" } else { "no" }, if pending(ctx) { "yes" } else { "no" },
+    // the boot menu as it is now (the boot partition is only readable by root, so the helper reports it)
+    let conf = std::fs::read_to_string(boot_dir(ctx).join("limine.conf")).unwrap_or_default();
+    let menu_timeout = conf.lines().find_map(|l| l.strip_prefix("timeout:")).map(|v| v.trim().to_string()).unwrap_or_else(|| "-".into());
+    let menu_previous = conf.contains("previous version");
+    format!("menu_timeout={menu_timeout}\nmenu_previous={}\n", if menu_previous { "yes" } else { "no" }) + &format!("version={}\nlive={}\npending={}\nprevious={}\navailable={}\ntoken={}\nrepo={}\ngood_after={}\n", current_version(ctx), if live { "yes" } else { "no" }, if pending(ctx) { "yes" } else { "no" },
         previous_version(ctx).unwrap_or_else(|| "-".into()), available_version(ctx).unwrap_or_else(|| "-".into()), if conf_value(ctx, "token").is_some() { "yes" } else { "no" }, conf_value(ctx, "repo").unwrap_or_else(|| "-".into()), good_after(ctx))
 }
 
