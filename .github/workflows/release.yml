@@ -41,7 +41,9 @@ jobs:
           esac
           mv "$SRC_ISO" "exec85-${TAG}.iso"
           rm -f exec85.iso exec85-testing.iso
-          sha256sum "exec85-${TAG}.iso" > SHA256SUMS
+          # the update package (installed systems update themselves from it) is published beside the ISO, with a checksum
+          mv exec85-update.tar.gz "exec85-update-${TAG}.tar.gz"
+          sha256sum "exec85-${TAG}.iso" "exec85-update-${TAG}.tar.gz" > SHA256SUMS
           cat sizes.txt SHA256SUMS
           # Release text comes from docs/releases/<tag>.md when that file exists (written by a person);
           # otherwise a short generic text.
@@ -51,6 +53,6 @@ jobs:
             printf '%s\n' "**Early alpha release ${TAG}.** See the repository README and docs/ for what works." \
               "Check the download with \`sha256sum -c SHA256SUMS\`." > notes.md
           fi
-          gh release create "$TAG" "exec85-${TAG}.iso" SHA256SUMS \
+          gh release create "$TAG" "exec85-${TAG}.iso" "exec85-update-${TAG}.tar.gz" SHA256SUMS \
             --repo "${{ github.repository }}" --title "Exec85 ${TAG} ${FLAVOR}" \
             --target "${{ github.sha }}" $PRE --notes-file notes.md

@@ -250,6 +250,19 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "mc-accept" => crate::mc::accept_eula(ctx, arg(1)?),
         "mc-status" => crate::mc::server_status(ctx, arg(1)?),
         "mc-list" => Ok(crate::mc::list(ctx)),
+        "update-status" => Ok(crate::update::status(ctx)),
+        "update-apply" => {
+            let path = arg(1)?;
+            let ok_place = ["/media/", "/home/", "/srv/", "/root/"].iter().any(|p| path.starts_with(p)) && !path.contains("..") && !path.chars().any(|c| c.is_control());
+            if !ok_place { return Err("Give the full path of an update package on a pendrive (/media/...) or in your home folder.".into()); }
+            crate::update::apply(ctx, std::path::Path::new(path), w.get(2).map(String::as_str) == Some("force"))
+        }
+        "update-check" => crate::update::check_online(ctx),
+        "update-install" => crate::update::install_online(ctx),
+        "update-rollback" => crate::update::rollback_now(ctx),
+        "update-previous" => crate::update::previous_next(ctx),
+        "update-good" => crate::update::mark_good(ctx),
+        "update-config" => { crate::update::set_conf(ctx, arg(1)?, w.get(2).map(String::as_str).unwrap_or(""))?; Ok("Saved.".into()) }
         "tunnel-status" => Ok(crate::tunnel::status(ctx)),
         "tunnel-install" => crate::tunnel::install(ctx),
         "tunnel-claim" => crate::tunnel::claim(ctx),
@@ -484,6 +497,27 @@ fn usb_watch() {
     }
 }
 
+/// After an update: once the new version has run for a while (2 minutes unless set otherwise), confirm it (the boot menu is hidden again).
+/// Also look for a newer release every few hours, so the Updates screen can say "a new version is available".
+fn update_watch() {
+    let ctx = Ctx { root: Path::new("/"), runner: &SysRunner };
+    if crate::supervisor::cmdline_has("exec85.live") { return; }
+    let uptime = || std::fs::read_to_string("/proc/uptime").ok().and_then(|t| t.split_whitespace().next().and_then(|v| v.parse::<f64>().ok())).unwrap_or(0.0);
+    let mut last_check = 0.0f64;
+    loop {
+        std::thread::sleep(Duration::from_secs(5));
+        let up = uptime();
+        if crate::update::pending(&ctx) && up >= crate::update::good_after(&ctx) as f64 {
+            if crate::update::mark_good(&ctx).is_ok() { crate::supervisor::console_line("EXEC85_UPDATE confirmed"); }
+        }
+        // the first look 3 minutes after boot, then every 6 hours; failures (no network, no token) are quiet
+        if up >= 180.0 && (last_check == 0.0 || up - last_check >= 6.0 * 3600.0) {
+            last_check = up;
+            if let Ok(m) = crate::update::check_online(&ctx) { crate::supervisor::console_line(&format!("EXEC85_UPDATE {}", m.replace(' ', "_"))); }
+        }
+    }
+}
+
 extern "C" { fn umask(mask: u32) -> u32; }
 
 pub fn serve() -> ! {
@@ -497,6 +531,7 @@ pub fn serve() -> ! {
     crate::supervisor::console_line("EXEC85_HELPER ready");
     std::thread::spawn(report_loop);
     std::thread::spawn(usb_watch);
+    std::thread::spawn(update_watch);
     let _ = fw_apply(&Ctx { root: Path::new("/"), runner: &SysRunner });   // make sure the rules match the services that exist
     for c in l.incoming().flatten() { std::thread::spawn(move || serve_one(c)); }
     std::process::exit(1)
@@ -588,6 +623,20 @@ pub fn cli(args: &[String]) -> i32 {
         ["--health"] => { let be: crate::apps::Backend = std::sync::Arc::new(|w: &[String]| { let r: Vec<&str> = w.iter().map(String::as_str).collect(); call(&r) }); crate::apps::health::report(&be, &mut std::io::stdout()); 0 }
         ["--logs"] => show(call(&["log-list"])),
         ["--logs", name] => show(call(&["log-tail", name, "40"])),
+        ["--update"] | ["--update", "status"] => show(call(&["update-status"])),
+        ["--update", "check"] => show(call(&["update-check"])),
+        ["--update", "install"] => show(call(&["update-install"])),
+        ["--update", "rollback"] => show(call(&["update-rollback"])),
+        ["--update", "previous"] => show(call(&["update-previous"])),
+        ["--update", "good"] => show(call(&["update-good"])),
+        ["--update", "apply", path] => show(call(&["update-apply", path])),
+        ["--update", "apply", path, "--force"] => show(call(&["update-apply", path, "force"])),
+        ["--update", "config", key, value] => show(call(&["update-config", key, value])),
+        ["--update", "token"] => {
+            // The token is never given on the command line (others could see it): type it in, or pipe it in.
+            let mut l = String::new(); let _ = std::io::stdin().read_line(&mut l);
+            show(call(&["update-config", "token", l.trim()]))
+        }
         ["--tunnel"] | ["--tunnel", "status"] => show(call(&["tunnel-status"])),
         ["--tunnel", a @ ("install" | "claim" | "reset" | "remove")] => show(call(&[&format!("tunnel-{a}")])),
         ["--sites"] | ["--sites", "list"] => show(call(&["site-list"])),
