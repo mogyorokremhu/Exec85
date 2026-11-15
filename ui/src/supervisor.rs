@@ -82,6 +82,31 @@ pub fn stage(exe: &Path, arg: &str, as_user: Option<&User>, start_dir: Option<&s
     Stage { code, login_user: name }
 }
 
+/// A command that will run as `u` (their groups, their home and environment), the way the login stage starts the shell.
+pub fn user_command(exe: &Path, u: &User) -> Command {
+    let mut cmd = Command::new(exe);
+    cmd.env_clear().env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin").env("TERM", "linux").env("EXEC85_SUPERVISED", "1")
+        .env("HOME", &u.home).env("USER", &u.name).env("LOGNAME", &u.name).env("SHELL", &u.shell).env("EXEC85_START", &u.home);
+    if Path::new(&u.home).is_dir() { let _ = crate::homedirs::ensure(Path::new(&u.home), u.uid, u.gid); cmd.current_dir(&u.home); }
+    let (uid, gid) = (u.uid, u.gid);
+    let groups = account::group_ids(Path::new("/"), u);
+    // SAFETY: runs between fork and exec and calls only system calls.
+    unsafe {
+        cmd.pre_exec(move || {
+            if sys::setgroups(groups.len(), groups.as_ptr()) != 0 || sys::setgid(gid) != 0 || sys::setuid(uid) != 0 { return Err(std::io::Error::last_os_error()); }
+            Ok(())
+        });
+    }
+    cmd
+}
+
+/// Switch the computer off or restart it (a remote session asked for it).
+pub fn power_now(code: i32) {
+    let cmd = if code == EXIT_REBOOT { "/sbin/reboot" } else { "/sbin/poweroff" };
+    console_line(&format!("EXEC85_SUPERVISOR {}", if code == EXIT_REBOOT { "rebooting" } else { "powering off" }));
+    let _ = Command::new(cmd).status();
+}
+
 fn power(code: i32) -> ! {
     let cmd = if code == EXIT_REBOOT { "/sbin/reboot" } else { "/sbin/poweroff" };
     console_line(&format!("EXEC85_SUPERVISOR {}", if code == EXIT_REBOOT { "rebooting" } else { "powering off" }));

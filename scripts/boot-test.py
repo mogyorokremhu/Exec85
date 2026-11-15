@@ -374,6 +374,7 @@ def scenario_install():
         vm.stop()
 
     scenario_update(disk)
+    scenario_webaccess(disk)
 
     # ---- fourth boot: the install disc is still in the drive. It must not install again: it finds the installed system and starts it ----
     vm = VM("disc-left-in", cdrom=iso, disk=disk)
@@ -481,6 +482,113 @@ def scenario_update(disk):
         terminal_run(vm, "echo $(test -e /usr/share/exec85/marker || echo GONE$((1+1))) $(grep -c 99.0.0 /etc/exec85/package-version) B$((5-3))", "re:GONE2.0.B2", 60, "previous: the update's files are gone again")
         terminal_run(vm, "cat /home/tester/keepme; echo KK$((5-3))", "re:kept\\s*KK2", 30, "previous: the user's data is still there")
         terminal_run(vm, "update status | grep -c 'pending=no'; echo N$((5-3))", "re:[1-9]\\s*N2", 30, "previous: nothing is left pending")
+    finally:
+        vm.stop()
+
+
+def web_decode_frame(payload):
+    """The browser's job: returns (width, height, set of colours seen in the tiles sent)."""
+    w, h, n = struct.unpack_from("<HHH", payload, 0)
+    i, colours = 6, set()
+    for _ in range(n):
+        x, y, runs = struct.unpack_from("<HHH", payload, i); i += 6
+        for _ in range(runs):
+            cnt = struct.unpack_from("<H", payload, i)[0]; colours.add(tuple(payload[i + 2:i + 5])); i += 5
+    return w, h, colours
+
+class WebStream:
+    """A reader for the remote screen's stream: [kind u8][length u32][payload] messages."""
+    def __init__(self, resp): self.r = resp
+    def read_exact(self, n):
+        out = b""
+        while len(out) < n:
+            chunk = self.r.read(n - len(out))
+            if not chunk: raise EOFError("stream ended")
+            out += chunk
+        return out
+    def message(self):
+        head = self.read_exact(5)
+        return head[0], self.read_exact(struct.unpack("<I", head[1:])[0])
+    def until(self, pred, limit=200):
+        """Read messages until pred(kind, payload) is true; returns that message."""
+        for _ in range(limit):
+            kind, body = self.message()
+            if kind != 0 and pred(kind, body): return kind, body
+        raise AssertionError("the wanted message never came")
+
+def scenario_webaccess(disk):
+    """The Exec85 screen in a browser: switched on in the installed system, then driven over HTTPS from outside."""
+    import http.client, ssl
+    ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE   # the certificate is the computer's own
+    def conn(): return http.client.HTTPSConnection("127.0.0.1", 8443, context=ctx, timeout=30)
+    def call(method, path, body=None, headers=None):
+        c = conn(); h = {"X-Exec85": "1"}; h.update(headers or {})
+        c.request(method, path, body=body, headers=h)
+        r = c.getresponse(); data = r.read(); return r.status, r.getheaders(), data
+    vm = VM("webaccess", disk=disk, extra=["-netdev", "user,id=n0,hostfwd=tcp:127.0.0.1:8443-:8443", "-device", "e1000e,netdev=n0"])
+    try:
+        login_tester(vm)
+        terminal_run(vm, "webaccess on > /tmp/w.txt 2>&1; echo W$((5-3))", "W2", 240, "web access: it is switched on")
+        terminal_run(vm, "sleep 3; svc list | grep -c -E 'webaccess(-tls)? running'; echo WS$((5-3))", "re:2.?WS2", 60, "web access: both services run")
+        ok = True
+        try:
+            st, hd, body = call("GET", "/")
+            step("web access: the page is served over HTTPS", st == 200 and b"Exec85" in body and any(k.lower() == "content-security-policy" for k, _ in hd))
+        except Exception as e:
+            ok = False; step("web access: the page is served over HTTPS", False, repr(e))
+            for i, cmd in enumerate(["cat /tmp/w.txt | cut -c1-66; echo D$((0+1))", "svc log webaccess-tls | tail -2 | cut -c1-66; echo D$((0+2))", "tail -2 /var/log/exec85/webaccess-tls.stunnel.log | cut -c1-66; echo D$((0+3))"], 1):
+                try: terminal_run(vm, cmd, f"D{i}", 20, "diagnostic")
+                except AssertionError: pass
+                print("DIAG-web>", app_line(vm, "terminal", 1), flush=True)
+        if ok:
+            try:
+                plain = http.client.HTTPConnection("127.0.0.1", 8443, timeout=10); plain.request("GET", "/"); pr = plain.getresponse(); plain_ok = pr.status == 200
+            except Exception: plain_ok = False
+            step("web access: plain (unencrypted) HTTP is not served on the public port", not plain_ok)
+            st, _, _ = call("GET", "/api/me"); step("web access: nothing without a login", st == 401)
+            st, _, _ = call("POST", "/api/login", "user=tester&pass=wrong", {"Content-Type": "application/x-www-form-urlencoded"}); step("web access: a wrong password is refused", st == 401)
+            st, _, _ = call("POST", "/api/login", "user=root&pass=secret7-", {"Content-Type": "application/x-www-form-urlencoded"}); step("web access: root cannot log in", st == 401)
+            st, hd, body = call("POST", "/api/login", "user=tester&pass=secret7-", {"Content-Type": "application/x-www-form-urlencoded"})
+            cookie = next((v for k, v in hd if k.lower() == "set-cookie"), "")
+            step("web access: the right password logs in", st == 200 and "sid=" in cookie and "HttpOnly" in cookie and "Secure" in cookie, f"{st} {cookie[:40]}")
+            ck = {"Cookie": cookie.split(";")[0]}
+            st, _, body = call("GET", "/api/me", headers=ck); step("web access: the session knows the user", st == 200 and b'"tester"' in body)
+            # the screen
+            c = conn(); c.request("GET", "/api/stream?w=800&h=600", headers=ck); resp = c.getresponse()
+            step("web access: the screen stream starts", resp.status == 200)
+            ws = WebStream(resp)
+            kind, payload = ws.until(lambda k, b: k == 1)
+            w, h, colours = web_decode_frame(payload)
+            step("web access: the first picture is the whole screen at the asked size", (w, h) == (800, 600) and len(colours) >= 3, f"{w}x{h} {len(colours)} colours")
+            def state_has(text): return lambda k, b: k == 2 and text in b.decode(errors="replace")
+            ws.until(state_has("user=tester"))
+            step("web access: the session runs as the person who logged in", True)
+            call("POST", "/api/key", "k alt-a\n", {"Content-Type": "text/plain", **ck})
+            kind, payload = ws.until(lambda k, b: k == 1)
+            step("web access: a key press changes only part of the picture", ws is not None and len(payload) < 20000, f"{len(payload)} bytes")
+            ws.until(state_has("menu=apps"))
+            step("web access: Alt+A opens the Apps menu in the remote session", True)
+            call("POST", "/api/key", "k down\nk enter\n", {"Content-Type": "text/plain", **ck})
+            ws.until(state_has("name=terminal"))
+            call("POST", "/api/key", "t echo remote$((1+1))\nk enter\n", {"Content-Type": "text/plain", **ck})
+            ws.until(state_has("remote2"))
+            step("web access: typed text and Enter run a command in a remote Terminal", True)
+            # files
+            st, _, body = call("POST", "/api/upload?dir=/home/tester&name=up.txt", b"hello from the browser", {"Content-Type": "application/octet-stream", **ck})
+            step("web access: a file can be sent to the server", st == 200 and b'"up.txt"' in body, f"{st} {body[:60]}")
+            st, _, body = call("GET", "/api/download?path=/home/tester/up.txt", headers=ck); step("web access: the file can be fetched back", st == 200 and body == b"hello from the browser")
+            st, _, body = call("POST", "/api/upload?dir=/home/tester&name=up.txt", b"second", {"Content-Type": "application/octet-stream", **ck})
+            st2, _, body2 = call("GET", "/api/download?path=/home/tester/up%20(2).txt", headers=ck); step("web access: an existing file is never overwritten", st == 200 and st2 == 200 and body2 == b"second", f"{st} {st2}")
+            st, _, body = call("GET", "/api/download?path=/etc/shadow", headers=ck); step("web access: files are read with the person's own rights (the password file is not)", st != 200 and b"hello" not in body and b"root:" not in body, f"{st}")
+            st, _, body = call("POST", "/api/upload?dir=/etc&name=evil.txt", b"x", {"Content-Type": "application/octet-stream", **ck}); step("web access: files cannot be written where the person may not write", st != 200, f"{st}")
+            c2 = conn(); c2.request("POST", "/api/key", body="k esc\n", headers={"Cookie": ck["Cookie"]}); r2 = c2.getresponse(); r2.read()
+            step("web access: a key press without the protective header is refused", r2.status == 403)
+            st, _, _ = call("POST", "/api/logout", "", ck); step("web access: logging out works", st == 200)
+            st, _, _ = call("GET", "/api/me", headers=ck); step("web access: the old session no longer works", st == 401)
+            for i in range(5): call("POST", "/api/login", "user=tester&pass=wrong%d" % i, {"Content-Type": "application/x-www-form-urlencoded"})
+            st, _, _ = call("POST", "/api/login", "user=tester&pass=secret7-", {"Content-Type": "application/x-www-form-urlencoded"})
+            step("web access: after five wrong passwords even the right one is refused for a while", st == 429, f"{st}")
+        terminal_run(vm, "webaccess off > /dev/null 2>&1; svc list | grep -c webaccess; echo WO$((5-3))", "re:0.?WO2", 90, "web access: it can be switched off again")
     finally:
         vm.stop()
 

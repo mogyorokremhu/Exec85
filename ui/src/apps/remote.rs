@@ -68,11 +68,12 @@ pub struct Remote {
     mode: Mode,
     msg: String,
     addr: Option<String>,
+    web: (bool, String),
     first: bool,
 }
 
 impl Remote {
-    pub fn new(be: Backend) -> Remote { Remote { be, job: Job::new(), ssh: Ssh { port: 22, ..Default::default() }, fw_on: true, rules: vec![], sel: 0, mode: Mode::List, msg: String::new(), addr: None, first: true } }
+    pub fn new(be: Backend) -> Remote { Remote { be, job: Job::new(), ssh: Ssh { port: 22, ..Default::default() }, fw_on: true, rules: vec![], sel: 0, mode: Mode::List, msg: String::new(), addr: None, web: (false, String::new()), first: true } }
 
     fn ask(&mut self, env: &Env, tag: &str, words: &[&str]) {
         if !self.job.start(env, &self.be, tag, words.iter().map(|s| s.to_string()).collect()) { self.msg = "Please wait, the last request is still running.".into(); }
@@ -84,7 +85,8 @@ impl Remote {
         let Some((tag, r)) = self.job.poll() else { return };
         match (tag.as_str(), r) {
             ("ssh-status", Ok(t)) => { self.ssh = parse_ssh(&t); self.ask(env, "fw-status", &["fw-status"]); }
-            ("fw-status", Ok(t)) => { let (on, rules) = parse_fw(&t); self.fw_on = on; self.rules = rules; self.sel = self.sel.min(self.rules.len().saturating_sub(1)); self.addr = super::network::local_ip(); }
+            ("fw-status", Ok(t)) => { let (on, rules) = parse_fw(&t); self.fw_on = on; self.rules = rules; self.sel = self.sel.min(self.rules.len().saturating_sub(1)); self.addr = super::network::local_ip(); self.ask(env, "web-status", &["web-status"]); }
+            ("web-status", Ok(t)) => { let get = |k: &str| t.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or("").trim().to_string(); self.web = (get("enabled") == "yes", get("fingerprint")); }
             (_, Ok(m)) => { if !m.is_empty() { self.msg = m; } self.refresh(env); }
             (_, Err(e)) => self.msg = e,
         }
@@ -138,6 +140,7 @@ impl Application for Remote {
                     code::DOWN => self.sel = (self.sel + 1).min(self.rules.len().saturating_sub(1)),
                     code::F5 => self.refresh(env),
                     _ => match k.ch().map(|c| c.to_ascii_lowercase()) {
+                        Some('w') => { if self.web.0 { self.ask(env, "web-disable", &["web-disable"]); } else { self.ask(env, "web-enable", &["web-enable"]); self.msg = "Setting up web access (the first time it makes a certificate and may download two small programs) ...".into(); } }
                         Some('s') => { let on = !self.ssh.enabled; self.set_ssh(env, on, self.ssh.port, self.ssh.password); }
                         Some('c') => self.mode = Mode::Port(self.ssh.port.to_string()),
                         Some('p') => { if self.ssh.password { self.set_ssh(env, self.ssh.enabled, self.ssh.port, false); } else { self.mode = Mode::Confirm("password"); } }
@@ -162,6 +165,8 @@ impl Application for Remote {
         let line = if self.ssh.enabled { format!("On   port {}   {}   {} key(s)", self.ssh.port, if self.ssh.password { "passwords ALLOWED" } else { "keys only" }, self.ssh.keys.len()) } else { "Off".to_string() };
         p.text(a.x + 12, a.y, &line, if self.ssh.enabled { t.text } else { t.dim }, None);
         if self.ssh.enabled { if let Some(ip) = &self.addr { p.clip(a.x, a.y + 1, a.w, &format!("Connect from another computer:  ssh {user}@{ip}{}", if self.ssh.port == 22 { String::new() } else { format!(" -p {}", self.ssh.port) }), t.dim, t.panel); } }
+        let web = if self.web.0 { format!("Browser access: ON   https://{}:{}   certificate {}", self.addr.clone().unwrap_or_else(|| "<this computer>".into()), crate::remote::PUBLIC_PORT, self.web.1.chars().take(23).collect::<String>()) } else { "Browser access: off  (press W to see the whole Exec85 screen from a browser)".to_string() };
+        p.clip(a.x, a.y + 2, a.w, &web, if self.web.0 { t.text } else { t.dim }, t.panel);
         p.text(a.x, a.y + 3, &format!("Firewall: {}", if self.fw_on { "ON  (incoming connections are refused except the ports below)" } else { "OFF  (everything is let in!)" }), if self.fw_on { t.text } else { t.accent }, None);
         let items: Vec<String> = self.rules.iter().map(|r| format!("{:<16} {:>5}/{:<4} {:<9} {}", r.name, r.port, r.proto, if r.scope == "local" { "home only" } else { "ANYWHERE" }, if r.from == "service" { "(opened by a service)" } else { "" })).collect();
         if items.is_empty() { p.text(a.x, a.y + 5, "No ports are open.", t.dim, None); }
@@ -175,7 +180,7 @@ impl Application for Remote {
             Mode::Confirm(w) => p.clip(a.x, prompt_row, a.w, if *w == "fw-off" { "Turn the firewall OFF? Everything will be reachable.  [Y] Yes  [N] No" } else { "Allow password login? Keys are much safer.  [Y] Yes  [N] No" }, t.accent, t.panel),
             Mode::List => {}
         }
-        let hint = match self.mode { Mode::List => "S SSH on/off  C Port  P Passwords  K Add key  F Firewall  A Open port  D Close port", Mode::Key(_) => "Paste the public key (the .pub file)   Enter Add   Esc Cancel", _ => "Enter OK   Esc Cancel" };
+        let hint = match self.mode { Mode::List => "S SSH  W Browser access  C Port  P Passwords  K Key  F Firewall  A Open port  D Close port", Mode::Key(_) => "Paste the public key (the .pub file)   Enter Add   Esc Cancel", _ => "Enter OK   Esc Cancel" };
         p.clip(a.x, foot, a.w, hint, t.dim, t.panel);
         if !self.msg.is_empty() { super::draw_note(p, a.x, foot.saturating_sub(1), a.w, &self.msg, t.accent, t.panel, 3); }
     }
@@ -183,7 +188,7 @@ impl Application for Remote {
     fn state(&self) -> String {
         let n = |s: &str| if s.is_empty() { "-".to_string() } else { s.replace(' ', "_") };
         let mode = match &self.mode { Mode::List => "list", Mode::Port(_) => "port", Mode::Key(_) => "key", Mode::Rule(_) => "rule", Mode::Confirm(_) => "confirm" };
-        format!("name=remote mode={mode} ssh={} port={} password={} keys={} fw={} rules={} sel={} busy={} msg={}", if self.ssh.enabled { "on" } else { "off" }, self.ssh.port, self.ssh.password, self.ssh.keys.len(), if self.fw_on { "on" } else { "off" }, self.rules.len(), n(self.rules.get(self.sel).map_or("", |r| r.name.as_str())), self.job.busy, n(&self.msg.chars().take(60).collect::<String>()))
+        format!("name=remote mode={mode} web={} ssh={} port={} password={} keys={} fw={} rules={} sel={} busy={} msg={}", if self.web.0 { "on" } else { "off" }, if self.ssh.enabled { "on" } else { "off" }, self.ssh.port, self.ssh.password, self.ssh.keys.len(), if self.fw_on { "on" } else { "off" }, self.rules.len(), n(self.rules.get(self.sel).map_or("", |r| r.name.as_str())), self.job.busy, n(&self.msg.chars().take(60).collect::<String>()))
     }
     fn hint(&self) -> &'static str { "S SSH  K Add key  F Firewall  A Open port  D Close port   F4 Close" }
 }
@@ -203,6 +208,9 @@ mod tests {
             match r[0].as_str() {
                 "ssh-status" => Ok("enabled no\nport 22\npassword no\n".into()),
                 "fw-status" => Ok("enabled yes\nrule ssh 22 tcp local manual\nrule minecraft 25565 tcp local service\n".into()),
+                "web-enable" => { c2.lock().unwrap().push("state:web-on".into()); Ok("on".into()) }
+                "web-disable" => { c2.lock().unwrap().push("state:web-off".into()); Ok("off".into()) }
+                "web-status" => { let on = c2.lock().unwrap().iter().rev().find(|c| c.starts_with("state:web")).map_or(false, |c| c == "state:web-on"); Ok(format!("enabled={}\nport=8443\nfingerprint=AB:CD\n", if on { "yes" } else { "no" })) }
                 "fw-allow" if r[1] == "bad" => Err("nope".into()),
                 _ => Ok(String::new()),
             }
@@ -212,6 +220,29 @@ mod tests {
     fn settle(m: &mut Remote) { let e = Env::for_tests(); for _ in 0..300 { m.tick(&e); if !m.job.busy { std::thread::sleep(Duration::from_millis(5)); m.tick(&e); if !m.job.busy { return; } } std::thread::sleep(Duration::from_millis(5)); } }
     fn key(m: &mut Remote, k: &str) { m.handle(parse_key(k).unwrap(), &Env::for_tests()); settle(m); }
     fn text(m: &mut Remote, t: &str) { for c in t.chars() { key(m, &c.to_string()); } }
+
+    #[test]
+    fn browser_access_is_switched_on_and_off_with_one_key() {
+        // the screen refreshes itself all the time, so a key may arrive while a refresh runs: press until it is taken
+        fn press_until(m: &mut Remote, calls: &Arc<Mutex<Vec<String>>>, want: &str) {
+            let e = Env::for_tests();
+            for _ in 0..200 {
+                if calls.lock().unwrap().iter().any(|c| c == want) { return; }
+                m.handle(parse_key("w").unwrap(), &e);
+                for _ in 0..20 { m.tick(&e); std::thread::sleep(Duration::from_millis(3)); }
+            }
+            panic!("{want} was never asked: {:?}", calls.lock().unwrap().iter().filter(|c| !c.ends_with("-status")).collect::<Vec<_>>());
+        }
+        let (mut m, calls) = app();
+        let e = Env::for_tests();
+        for _ in 0..100 { m.tick(&e); std::thread::sleep(Duration::from_millis(3)); if m.state().contains("web=off") && calls.lock().unwrap().iter().any(|c| c == "web-status") { break; } }
+        press_until(&mut m, &calls, "web-enable");
+        for _ in 0..300 { m.tick(&e); std::thread::sleep(Duration::from_millis(3)); if m.state().contains("web=on") { break; } }
+        assert!(m.state().contains("web=on"), "{}", m.state());
+        press_until(&mut m, &calls, "web-disable");
+        use crate::gfx::{Canvas, Metrics, Mode as M, Theme};
+        for (w, h) in [(8usize, 4usize), (50, 14), (110, 36)] { let mut c = Canvas::new(1280, 800); let mut p = Painter { c: &mut c, m: Metrics::for_height(800), t: Theme::new(M::Dark) }; m.draw(&mut p, Rect { x: 1, y: 1, w, h }, true); }
+    }
 
     #[test]
     fn status_text_is_read() {

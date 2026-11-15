@@ -264,6 +264,9 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "update-good" => crate::update::mark_good(ctx),
         "update-config" => { crate::update::set_conf(ctx, arg(1)?, w.get(2).map(String::as_str).unwrap_or(""))?; Ok("Saved.".into()) }
         "tunnel-status" => Ok(crate::tunnel::status(ctx)),
+        "web-status" => Ok(crate::webaccess::status(ctx)),
+        "web-enable" => crate::webaccess::enable(ctx),
+        "web-disable" => crate::webaccess::disable(ctx),
         "tunnel-install" => crate::tunnel::install(ctx),
         "tunnel-claim" => crate::tunnel::claim(ctx),
         "tunnel-reset" => crate::tunnel::reset(ctx),
@@ -623,6 +626,8 @@ pub fn cli(args: &[String]) -> i32 {
         ["--health"] => { let be: crate::apps::Backend = std::sync::Arc::new(|w: &[String]| { let r: Vec<&str> = w.iter().map(String::as_str).collect(); call(&r) }); crate::apps::health::report(&be, &mut std::io::stdout()); 0 }
         ["--logs"] => show(call(&["log-list"])),
         ["--logs", name] => show(call(&["log-tail", name, "40"])),
+        ["--webaccess"] | ["--webaccess", "status"] => show(call(&["web-status"])),
+        ["--webaccess", on_off @ ("on" | "off")] => show(call(&[if *on_off == "on" { "web-enable" } else { "web-disable" }])),
         ["--update"] | ["--update", "status"] => show(call(&["update-status"])),
         ["--update", "check"] => show(call(&["update-check"])),
         ["--update", "install"] => show(call(&["update-install"])),

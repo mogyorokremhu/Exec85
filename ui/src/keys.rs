@@ -136,6 +136,18 @@ impl Key {
     pub fn ch(&self) -> Option<char> { if self.ctrl || self.alt { None } else { self.base_char() } }
 }
 
+/// The key (and the modifiers) that types `c` on `layout`: the way a phone's keyboard or a pasted text reaches a program
+/// that only knows key presses. Plain keys are preferred over Shift and AltGr ones.
+pub fn key_for_char(layout: Layout, c: char) -> Option<Key> {
+    match c { '\n' | '\r' => return Some(Key::new(code::ENTER)), '\t' => return Some(Key::new(code::TAB)), _ => {} }
+    for (shift, altgr) in [(false, false), (true, false), (false, true), (true, true)] {
+        for code in 2u16..=90 {
+            if char_for(layout, code, shift, altgr) == Some(c) { return Some(Key { code, shift, altgr, ..Key::default() }); }
+        }
+    }
+    None
+}
+
 /// Parse names like "down", "ctrl-h", "alt-v", "f10", "e" (used by test tools).
 pub fn parse_key(s: &str) -> Option<Key> {
     let mut k = Key::default();
@@ -245,6 +257,21 @@ mod tests {
         assert_eq!(k.ch(), None);
         assert_eq!(k.base_char(), Some('a'));
     }
+    #[test]
+    fn any_typed_character_finds_its_key_on_every_layout() {
+        for l in Layout::ALL {
+            for c in (32u8..=126).map(|b| b as char) {
+                let k = key_for_char(l, c).unwrap_or_else(|| panic!("{l:?} {c:?}"));
+                assert_eq!(char_for(l, k.code, k.shift, k.altgr), Some(c));
+            }
+        }
+        assert_eq!(key_for_char(Layout::Us, 'a'), Some(Key::new(30)));
+        assert_eq!(key_for_char(Layout::Us, 'A').map(|k| (k.code, k.shift)), Some((30, true)));
+        assert_eq!(key_for_char(Layout::Hu, '@').map(|k| (k.code, k.altgr)), Some((47, true)));
+        assert_eq!(key_for_char(Layout::Us, '\n'), Some(Key::new(code::ENTER)));
+        assert_eq!(key_for_char(Layout::Us, '\u{1F600}'), None);
+    }
+
     #[test]
     fn parse_names() {
         assert_eq!(parse_key("down"), Some(Key::new(code::DOWN)));

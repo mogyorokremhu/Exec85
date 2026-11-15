@@ -470,3 +470,10 @@ notices, then the repo goes public.
 3. **Base:** OK with Alpine + OpenRC + Limine?
 4. **Results of the environment check** in section 0 (Windows version,
    virtualization enabled?, WSL2/Docker status).
+
+
+## v0.9.5 - browser access (done in code, see docs/releases/v0.9.5.md)
+Remote Exec85 screen in a web browser for a server that sits in the garage: separate per-user session (`rsession`), tile-diffed pictures
+(`rframe`), HTTPS through stunnel, login with system accounts (not root), lockout after five wrong passwords, file upload and download as the
+person, on/off in Apps > Remote access (`webaccess`). Off by default.
+Ideas for later: WebAuthn/two-factor login, a mouse for the browser screen, session list and "log out everywhere", audio.
