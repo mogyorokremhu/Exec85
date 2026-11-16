@@ -609,6 +609,12 @@ def scenario_webaccess(disk):
             st, _, _ = call("POST", "/api/logout", "", ck); step("web access: logging out works", st == 200)
             st, _, _ = call("GET", "/api/me", headers=ck); step("web access: the old session no longer works", st == 401)
             terminal_run(vm, "printf 'new-pass-77\\nnew-pass-77\\n' | passwd > /tmp/pw.txt 2>&1; tail -1 /tmp/pw.txt | cut -c1-60; echo PW$((5-3))", "PW2", 90, "passwd: the user changes their own password")
+            try:
+                terminal_run(vm, "echo $(type passwd | cut -c1-40) U=$USER $(wc -c < /tmp/pw.txt) PD$((5-3))", "PD2", 20, "diagnostic")
+                print("DIAG-passwd>", app_line(vm, "terminal", 1), flush=True)
+                terminal_run(vm, "cut -c1-60 /tmp/pw.txt | tail -2; echo PE$((5-3))", "PE2", 20, "diagnostic")
+                print("DIAG-passwd-out>", app_line(vm, "terminal", 1), flush=True)
+            except AssertionError: pass
             st, _, _ = call("POST", "/api/login", "user=tester&pass=new-pass-77", {"Content-Type": "application/x-www-form-urlencoded"}); step("passwd: the new password works on the web page", st == 200, f"{st}")
             st, _, _ = call("POST", "/api/login", "user=tester&pass=secret7-", {"Content-Type": "application/x-www-form-urlencoded"}); step("passwd: the old password no longer works", st == 401, f"{st}")
             for i in range(5): call("POST", "/api/login", "user=tester&pass=wrong%d" % i, {"Content-Type": "application/x-www-form-urlencoded"})
