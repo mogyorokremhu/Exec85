@@ -608,8 +608,11 @@ def scenario_webaccess(disk):
             step("web access: a key press without the protective header is refused", r2.status == 403)
             st, _, _ = call("POST", "/api/logout", "", ck); step("web access: logging out works", st == 200)
             st, _, _ = call("GET", "/api/me", headers=ck); step("web access: the old session no longer works", st == 401)
+            terminal_run(vm, "printf 'new-pass-77\\nnew-pass-77\\n' | passwd > /tmp/pw.txt 2>&1; tail -1 /tmp/pw.txt | cut -c1-60; echo PW$((5-3))", "PW2", 90, "passwd: the user changes their own password")
+            st, _, _ = call("POST", "/api/login", "user=tester&pass=new-pass-77", {"Content-Type": "application/x-www-form-urlencoded"}); step("passwd: the new password works on the web page", st == 200, f"{st}")
+            st, _, _ = call("POST", "/api/login", "user=tester&pass=secret7-", {"Content-Type": "application/x-www-form-urlencoded"}); step("passwd: the old password no longer works", st == 401, f"{st}")
             for i in range(5): call("POST", "/api/login", "user=tester&pass=wrong%d" % i, {"Content-Type": "application/x-www-form-urlencoded"})
-            st, _, _ = call("POST", "/api/login", "user=tester&pass=secret7-", {"Content-Type": "application/x-www-form-urlencoded"})
+            st, _, _ = call("POST", "/api/login", "user=tester&pass=new-pass-77", {"Content-Type": "application/x-www-form-urlencoded"})
             step("web access: after five wrong passwords even the right one is refused for a while", st == 429, f"{st}")
         if ok:
             # the website monitor watches the web access service itself: down when it is switched off, back up when it is switched on again

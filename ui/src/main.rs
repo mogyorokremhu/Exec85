@@ -451,7 +451,7 @@ fn main() {
     if let Some(name) = args.first().and_then(|a| Path::new(a).file_name()).map(|n| n.to_string_lossy().into_owned()) {
         if let Some(code) = cmds::run(&name, &args[1..]) { std::process::exit(code); }
         // `svc` and `pkg` are short forms of `exec85 --svc` and `exec85 --pkg`.
-        if name == "svc" || name == "pkg" || name == "mc" || name == "bot" || name == "fw" || name == "app" || name == "sites" || name == "browse" || name == "health" || name == "logs" || name == "tunnel" || name == "webaccess" || name == "sitewatch" || name == "gallery" || name == "brightness" || name == "update" {
+        if name == "svc" || name == "pkg" || name == "mc" || name == "bot" || name == "fw" || name == "app" || name == "sites" || name == "browse" || name == "health" || name == "logs" || name == "tunnel" || name == "webaccess" || name == "sitewatch" || name == "gallery" || name == "passwd" || name == "brightness" || name == "update" {
             let mut a = vec![format!("--{}", if name == "browse" { "web" } else { name.as_str() })];
             a.extend(args[1..].iter().cloned());
             std::process::exit(helper::cli(&a));

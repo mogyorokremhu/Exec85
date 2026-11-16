@@ -264,6 +264,7 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "update-good" => crate::update::mark_good(ctx),
         "update-config" => { crate::update::set_conf(ctx, arg(1)?, w.get(2).map(String::as_str).unwrap_or(""))?; Ok("Saved.".into()) }
         "tunnel-status" => Ok(crate::tunnel::status(ctx)),
+        "pw-set" => { crate::account::set_password(ctx.root, arg(1)?, arg(2)?).map_err(|e| e.to_string())?; Ok(format!("The password of {} is changed.", arg(1)?)) }
         "gal-status" => Ok(crate::gallery::status(ctx)),
         "gal-folder" => crate::gallery::set_folder(ctx, arg(1)?),
         "gal-password" => crate::gallery::set_password(ctx, arg(1)?),
@@ -643,6 +644,15 @@ pub fn cli(args: &[String]) -> i32 {
         ["--health"] => { let be: crate::apps::Backend = std::sync::Arc::new(|w: &[String]| { let r: Vec<&str> = w.iter().map(String::as_str).collect(); call(&r) }); crate::apps::health::report(&be, &mut std::io::stdout()); 0 }
         ["--logs"] => show(call(&["log-list"])),
         ["--logs", name] => show(call(&["log-tail", name, "40"])),
+        ["--passwd", rest @ ..] if rest.len() <= 1 => {
+            let name = rest.first().map(|n| n.to_string()).unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+            let stty = |a: &str| { let _ = std::process::Command::new("stty").arg(a).status(); };
+            let mut ask = |q: &str| { eprint!("{q}"); stty("-echo"); let mut l = String::new(); let _ = std::io::stdin().read_line(&mut l); stty("echo"); eprintln!(); l.trim_end_matches(['\n', '\r']).to_string() };
+            let a = ask(&format!("New password for {name} (at least 8 characters): "));
+            let b = ask("Again: ");
+            if a != b { eprintln!("The two passwords are not the same. Nothing was changed."); return 1; }
+            show(call(&["pw-set", &name, &a]))
+        }
         ["--gallery"] | ["--gallery", "status"] => show(call(&["gal-status"])),
         ["--gallery", "folder", path] => show(call(&["gal-folder", path])),
         ["--gallery", "password", pw] => show(call(&["gal-password", pw])),

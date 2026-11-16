@@ -125,6 +125,24 @@ pub fn lock_root(root: &Path) -> io::Result<()> {
     write_atomic(&path, &(lines.join("\n") + "\n"), 0o600)
 }
 
+/// Give an existing user a new password (stored as a hash; the old one stops working).
+pub fn set_password(root: &Path, name: &str, password: &str) -> io::Result<()> {
+    if password.chars().count() < 8 { return Err(io::Error::new(io::ErrorKind::InvalidInput, "The password must have at least 8 characters.")); }
+    if password.chars().any(|c| c.is_control()) { return Err(io::Error::new(io::ErrorKind::InvalidInput, "The password may not contain control characters.")); }
+    if !users(root).iter().any(|u| u.name == name) { return Err(io::Error::new(io::ErrorKind::NotFound, "There is no such user.")); }
+    let path = root.join("etc/shadow");
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    let days = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86400);
+    let hash = crypt::hash_password(password);
+    let mut found = false;
+    let mut lines: Vec<String> = text.lines().map(|l| {
+        let f: Vec<&str> = l.split(':').collect();
+        if f.first() == Some(&name) && f.len() >= 3 { found = true; let mut g: Vec<String> = f.iter().map(|x| x.to_string()).collect(); g[1] = hash.clone(); g[2] = days.to_string(); g.join(":") } else { l.to_string() }
+    }).collect();
+    if !found { lines.push(format!("{name}:{hash}:{days}:0:99999:7:::")); }
+    write_atomic(&path, &(lines.join("\n") + "\n"), 0o600)
+}
+
 /// Create a user with a home folder. `password: None` or `Some("")` means no password.
 /// The user is added to each group in `extra_groups` that exists.
 pub fn add_user(root: &Path, name: &str, password: Option<&str>, extra_groups: &[&str]) -> io::Result<User> {
@@ -163,6 +181,22 @@ pub fn add_user(root: &Path, name: &str, password: Option<&str>, extra_groups: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_password_can_be_set_for_a_user_with_none() {
+        let root = fake_root("setpw");
+        add_user(&root, "ann", None, &[]).unwrap();
+        assert!(authenticate(&root, "ann", "newpass-123").is_err(), "no password yet");
+        assert!(set_password(&root, "ann", "short").is_err(), "too short");
+        assert!(set_password(&root, "nobody-here", "newpass-123").is_err(), "no such user");
+        set_password(&root, "ann", "newpass-123").unwrap();
+        assert!(authenticate(&root, "ann", "newpass-123").is_ok());
+        assert!(authenticate(&root, "ann", "wrong-pass-1").is_err());
+        set_password(&root, "ann", "another-pass-9").unwrap();
+        assert!(authenticate(&root, "ann", "newpass-123").is_err(), "the old one stops working");
+        assert!(authenticate(&root, "ann", "another-pass-9").is_ok());
+        let _ = fs::remove_dir_all(&root);
+    }
 
     fn fake_root(tag: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("exec85-acct-{tag}-{}", std::process::id()));

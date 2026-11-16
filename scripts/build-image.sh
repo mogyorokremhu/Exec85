@@ -73,7 +73,7 @@ VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$SRC/ui/Cargo.toml" | head -n1)
 install -D -m 644 /dev/null "$R/etc/exec85/package-version"; echo "$VERSION" > "$R/etc/exec85/package-version"
 install -D -m 755 "$BIN" "$R/usr/bin/exec85"
 # Our own terminal commands are this same program under other names.
-for c in dir disk about get svc pkg mc bot fw app browse sites health logs tunnel webaccess brightness sitewatch gallery update; do ln -sf exec85 "$R/usr/bin/$c"; done
+for c in dir disk about get svc pkg mc bot fw app browse sites health logs tunnel webaccess brightness sitewatch gallery passwd update; do ln -sf exec85 "$R/usr/bin/$c"; done
 cp -a "$SRC/image/overlay/." "$R/"
 mkdir -p "$R/proc" "$R/sys" "$R/dev" "$R/run" "$R/tmp" "$R/root"
 # OpenRC: only the 'default' runlevel is used for now (user services live there from milestone 5).
@@ -116,7 +116,7 @@ for f in usr/bin/exec85 sbin/exec85-rollback etc/inittab etc/mdev.conf etc/exec8
     [ -e "$R/$f" ] || { echo "ERROR: $f missing from the root file system"; exit 1; }
     mkdir -p "$U/files/$(dirname "$f")"; cp -a "$R/$f" "$U/files/$f"
 done
-for c in dir disk about get svc pkg mc bot fw app browse sites health logs tunnel webaccess brightness sitewatch gallery update; do mkdir -p "$U/files/usr/bin"; ln -sf exec85 "$U/files/usr/bin/$c"; done
+for c in dir disk about get svc pkg mc bot fw app browse sites health logs tunnel webaccess brightness sitewatch gallery passwd update; do mkdir -p "$U/files/usr/bin"; ln -sf exec85 "$U/files/usr/bin/$c"; done
 mkdir -p "$U/files/etc/runlevels/default"; for l in "$R"/etc/runlevels/default/exec85-*; do cp -a "$l" "$U/files/etc/runlevels/default/"; done
 mkdir -p "$U/files/usr/share/exec85"; [ -d "$R/usr/share/exec85/audio" ] && cp -a "$R/usr/share/exec85/audio" "$U/files/usr/share/exec85/audio"
 # the kernel, its modules and the boot image for installed systems (used only if the installed system does not have this kernel yet)

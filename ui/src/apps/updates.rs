@@ -118,7 +118,7 @@ impl Application for Updates {
                 y += 1;
                 para(p, "An update replaces only Exec85's own files. Your settings, accounts, services, firewall, game servers and files are not touched, and nothing is reinstalled. Restart afterwards (File, Restart) to run the new version.", t.dim, &mut y);
                 y += 1;
-                para(p, if s.token { "GitHub access key: set." } else { "GitHub access key: not set (needed to download updates, because the project is private)." }, t.dim, &mut y);
+                para(p, if s.token { "GitHub access key: set." } else { "GitHub access key: not set (only needed if the project is private; leave it empty)." }, t.dim, &mut y);
                 hint = "C Check  U Install online  P From USB  T Key  R Previous  K Keep".into();
             }
         }
