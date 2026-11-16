@@ -657,7 +657,7 @@ def scenario_webaccess(disk):
             st, _, body = gcall("POST", "/api/upload?dir=&name=n.png", b"NEWPNG", gck); step("gallery: a picture can be added", st == 200 and b"n.png" in body, f"{st} {body[:80]!r}")
             st, _, body = gcall("POST", "/api/upload?dir=&name=a.png", b"OVERWRITE", gck); step("gallery: an existing picture is never overwritten", st == 200 and b"a (2).png" in body, f"{st} {body[:80]!r}")
             st, _, body = gcall("POST", "/api/upload?dir=&name=evil.html", b"<script>", gck); step("gallery: only pictures and videos can be added", st != 200)
-            terminal_run(vm, "echo OWN$(stat -c %U /home/tester/gal/n.png)X", "OWNtesterX", 30, "gallery: the added picture is in the folder, owned by the normal user")
+            terminal_run(vm, "echo OWN$(ls -l /home/tester/gal | grep -c \" tester .* n.png\")X", "OWN1X", 30, "gallery: the added picture is in the folder, owned by the normal user")
             for i in range(5): gcall("POST", "/api/login", "pass=wrong%d" % i, form)
             step("gallery: after five wrong passwords even the right one waits", gcall("POST", "/api/login", "pass=test-pass-9", form)[0] == 429)
             terminal_run(vm, "gallery off > /dev/null 2>&1; svc list | grep -c gallery; echo GO$((5-3))", "re:0.?GO2", 90, "gallery: it can be switched off again")

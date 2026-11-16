@@ -618,6 +618,8 @@ mod tests {
         assert!(head.starts_with("HTTP/1.1 200"), "{head}");
         let (head, body) = http(addr, &format!("GET /api/state HTTP/1.1\r\nHost: x\r\n{ck}\r\n"), b"");
         assert!(head.starts_with("HTTP/1.1 200") && body == b"hello", "{head}");
+        // wait until the session program has really taken in the keys (a slow machine may not have started it yet)
+        for _ in 0..100 { if std::fs::read_to_string(&log).unwrap_or_default().contains("full") { break; } thread::sleep(Duration::from_millis(100)); }
         // the program is ended on logout, and the old token stops working
         let (head, _) = post(addr, "/api/logout", &ck, h, "");
         assert!(head.starts_with("HTTP/1.1 200") && head.contains("Max-Age=0"));
