@@ -608,7 +608,7 @@ def scenario_webaccess(disk):
             step("web access: a key press without the protective header is refused", r2.status == 403)
             st, _, _ = call("POST", "/api/logout", "", ck); step("web access: logging out works", st == 200)
             st, _, _ = call("GET", "/api/me", headers=ck); step("web access: the old session no longer works", st == 401)
-            terminal_run(vm, "printf 'new-pass-77\\nnew-pass-77\\n' | passwd > /tmp/pw.txt 2>&1; tail -1 /tmp/pw.txt | cut -c1-60; echo PW$((5-3))", "PW2", 90, "passwd: the user changes their own password")
+            terminal_run(vm, "(echo new-pass-77; echo new-pass-77) | passwd > /tmp/pw.txt 2>&1; tail -1 /tmp/pw.txt | cut -c1-60; echo PW$((5-3))", "PW2", 90, "passwd: the user changes their own password")
             try:
                 terminal_run(vm, "echo $(type passwd | cut -c1-40) U=$USER $(wc -c < /tmp/pw.txt) PD$((5-3))", "PD2", 20, "diagnostic")
                 print("DIAG-passwd>", app_line(vm, "terminal", 1), flush=True)

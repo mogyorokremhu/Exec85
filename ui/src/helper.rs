@@ -646,8 +646,12 @@ pub fn cli(args: &[String]) -> i32 {
         ["--logs", name] => show(call(&["log-tail", name, "40"])),
         ["--passwd", rest @ ..] if rest.len() <= 1 => {
             let name = rest.first().map(|n| n.to_string()).unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
-            let stty = |a: &str| { let _ = std::process::Command::new("stty").arg(a).status(); };
-            let mut ask = |q: &str| { eprint!("{q}"); stty("-echo"); let mut l = String::new(); let _ = std::io::stdin().read_line(&mut l); stty("echo"); eprintln!(); l.trim_end_matches(['\n', '\r']).to_string() };
+            use std::io::{BufRead, IsTerminal};
+            let is_tty = std::io::stdin().is_terminal();
+            let stty = |a: &str| { if is_tty { let _ = std::process::Command::new("stty").arg(a).status(); } };
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            let mut ask = |q: &str| { if is_tty { eprint!("{q}"); } stty("-echo"); let mut l = String::new(); let _ = input.read_line(&mut l); stty("echo"); if is_tty { eprintln!(); } l.trim_end_matches(['\n', '\r']).to_string() };
             let a = ask(&format!("New password for {name} (at least 8 characters): "));
             let b = ask("Again: ");
             if a != b { eprintln!("The two passwords are not the same. Nothing was changed."); return 1; }
