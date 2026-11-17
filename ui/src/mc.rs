@@ -246,7 +246,7 @@ pub const NO_CONSOLE: &str = "This server was installed before the console exist
 fn minecraft_service(ctx: &Ctx, name: &str) -> Result<ServiceDef, String> {
     services::valid_name(name).map_err(String::from)?;
     let d = std::fs::read_to_string(ctx.root.join("etc/exec85/services").join(format!("{name}.conf"))).ok().and_then(|t| services::parse_conf(&t)).ok_or_else(|| format!("There is no Minecraft server called {name}."))?;
-    if !d.command.contains("server.jar") { return Err(format!("{name} is not a Minecraft server.")); }
+    if !is_minecraft_command(&d.command) { return Err(format!("{name} is not a Minecraft server.")); }
     Ok(d)
 }
 
@@ -471,11 +471,14 @@ pub fn accept_eula(ctx: &Ctx, name: &str) -> Result<String, String> {
 }
 
 /// Every Minecraft server on this computer, one per line: `name state folder` (state: running, stopped, crashed, unknown).
+/// A service that runs a Minecraft server: our own `server.jar`, or an imported one (any `-jar something.jar nogui`).
+pub fn is_minecraft_command(command: &str) -> bool { command.contains("server.jar") || (command.contains(" -jar ") && command.trim_end().ends_with(" nogui")) }
+
 pub fn list(ctx: &Ctx) -> String {
     let mut out = String::new();
     for n in crate::helper::list_names(ctx.root) {
         let Ok(d) = std::fs::read_to_string(ctx.root.join("etc/exec85/services").join(format!("{n}.conf"))).map_err(|_| ()).and_then(|t| services::parse_conf(&t).ok_or(())) else { continue };
-        if !d.command.contains("server.jar") { continue; }
+        if !is_minecraft_command(&d.command) { continue; }
         let st = match crate::helper::status_of(ctx, &d) { services::Status::Running => "running", services::Status::Stopped => "stopped", services::Status::Crashed => "crashed", services::Status::Unknown => "unknown" };
         out.push_str(&format!("{} {} {}\n", n, st, d.dir));
     }
@@ -829,6 +832,13 @@ mod tests {
         std::fs::create_dir_all(d.join("usr/lib/jvm/java-21-openjdk/bin")).unwrap();
         std::fs::write(d.join("usr/lib/jvm/java-21-openjdk/bin/java"), "").unwrap();
         d
+    }
+
+    #[test]
+    fn imported_servers_are_recognised_by_their_command() {
+        assert!(is_minecraft_command("/etc/exec85/mc-run /opt/java-25/bin/java -Xmx4G -jar paper-26.3-45.jar nogui"));
+        assert!(is_minecraft_command("/etc/exec85/mc-run java -jar server.jar nogui"));
+        assert!(!is_minecraft_command("/usr/bin/python3 bot.py") && !is_minecraft_command("java -jar tool.jar --help"));
     }
 
     #[test]
