@@ -540,6 +540,75 @@ pub fn create(ctx: &Ctx, c: &Create) -> Result<String, String> {
     }
 }
 
+/// Which Java a server needs, from the game version in the file name (26.x: Java 25; 1.20.5 to 1.21.x: 21; 1.18 to 1.20.4: 17; 1.17: 17; older: 8).
+pub fn java_for_version(major: u32, minor: u32, patch: u32) -> u32 {
+    if major >= 26 { 25 } else if major == 1 && (minor >= 21 || (minor == 20 && patch >= 5)) { 21 } else if major == 1 && minor >= 17 { 17 } else { 8 }
+}
+
+/// The first `a.b` or `a.b.c` number in a file name such as `paper-26.3-45.jar` or `paper-1.21.4-232.jar`.
+pub fn version_in_name(name: &str) -> Option<(u32, u32, u32)> {
+    let b = name.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_digit() && (i == 0 || !b[i - 1].is_ascii_digit()) {
+            let rest = &name[i..];
+            let mut nums = vec![];
+            for part in rest.split(|c: char| !(c.is_ascii_digit() || c == '.')).next().unwrap_or("").split('.') {
+                match part.parse::<u32>() { Ok(n) => nums.push(n), Err(_) => break }
+            }
+            if nums.len() >= 2 { return Some((nums[0], nums[1], nums.get(2).copied().unwrap_or(0))); }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Make a server that already sits in a folder (copied from a pendrive, say) a managed server: a service that starts it.
+pub fn import(ctx: &Ctx, name: &str, folder: &str, ram_gb: u32) -> Result<String, String> {
+    services::valid_name(name).map_err(String::from)?;
+    if !valid_base(folder) || !(folder.starts_with("/home/") || folder.starts_with("/srv/")) {
+        return Err("The folder must be under /home or /srv, and its name may only contain letters, digits and / _ . - (no spaces: rename it with F2 in the file manager, e.g. to minecraft_server).".into());
+    }
+    let mem_kb = std::fs::read_to_string(ctx.root.join("proc/meminfo")).unwrap_or_default().lines().find(|l| l.starts_with("MemTotal:")).and_then(|l| l.split_whitespace().nth(1)).and_then(|v| v.parse().ok()).unwrap_or(0);
+    if !ram_choices(mem_kb).contains(&ram_gb) { return Err(format!("This computer does not have enough memory for {ram_gb} GB. Choose from: {:?}.", ram_choices(mem_kb))); }
+    if ctx.root.join("etc/exec85/services").join(format!("{name}.conf")).exists() { return Err(format!("A service called {name} already exists.")); }
+    let dir = ctx.root.join(folder.trim_start_matches('/'));
+    let md = std::fs::metadata(&dir).map_err(|_| "That folder does not exist.".to_string())?;
+    if !md.is_dir() { return Err("That is not a folder.".into()); }
+    let user = {
+        use std::os::unix::fs::MetadataExt;
+        crate::gallery::owner_name(md.uid(), &crate::account::users(ctx.root))?
+    };
+    // the server file: server.jar, or the only .jar in the folder, or the only one whose name says what it is
+    let mut jars: Vec<String> = std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten().filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".jar") && !n.starts_with('.') && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))).collect();
+    jars.sort();
+    let jar = if jars.iter().any(|j| j == "server.jar") { "server.jar".to_string() }
+        else if jars.len() == 1 { jars[0].clone() }
+        else {
+            let named: Vec<&String> = jars.iter().filter(|j| ["paper", "purpur", "spigot", "fabric", "forge", "server", "minecraft"].iter().any(|k| j.to_lowercase().starts_with(k))).collect();
+            if named.len() == 1 { named[0].clone() } else { return Err(format!("I could not tell which file is the server in that folder (found: {}). Rename it to server.jar.", if jars.is_empty() { "no .jar files".to_string() } else { jars.join(", ") })); }
+        };
+    let (maj, min, pat) = version_in_name(&jar).or_else(|| {
+        std::fs::read_to_string(dir.join("version_history.json")).ok().and_then(|t| version_in_name(t.split("\"currentVersion\"").nth(1).unwrap_or("")))
+    }).ok_or("I could not tell which Minecraft version this is (the file name has no version). Rename the file like paper-26.3.jar or tell me the version.")?;
+    let java = ensure_java(ctx, java_for_version(maj, min, pat))?;
+    let eula = std::fs::read_to_string(dir.join("eula.txt")).map_or(false, |t| t.lines().any(|l| l.trim().eq_ignore_ascii_case("eula=true")));
+    let port: u16 = std::fs::read_to_string(dir.join("server.properties")).ok().and_then(|t| t.lines().find_map(|l| l.strip_prefix("server-port=").and_then(|v| v.trim().parse().ok()))).unwrap_or(25565);
+    let busy: Vec<String> = std::fs::read_dir(ctx.root.join("etc/exec85/services")).into_iter().flatten().flatten()
+        .filter_map(|e| { let t = std::fs::read_to_string(e.path()).ok()?; let n = e.path().file_stem()?.to_string_lossy().into_owned(); t.lines().any(|l| l.trim() == format!("ports={port}/tcp")).then_some(n) }).collect();
+    let command = format!("{RUN_SCRIPT} {java} -Xmx{ram_gb}G -Xms1G {JVM_FLAGS} -jar {jar} nogui");
+    let def = ServiceDef { name: name.into(), description: format!("Imported Minecraft server ({jar})"), command, dir: folder.into(), user: user.clone(), env: vec![], autostart: eula, ports: format!("{port}/tcp") };
+    crate::helper::handle(ctx, &["svc-save".to_string(), services::render_conf(&def)])?;
+    let clash = if busy.is_empty() { String::new() } else { format!(" NOTE: {} also use port {port}; stop them first (only one server can use a port).", busy.join(", ")) };
+    if eula {
+        if busy.is_empty() { crate::helper::handle(ctx, &["svc-start".to_string(), name.to_string()])?; }
+        Ok(format!("{name} is set up ({jar}, Java {}, {ram_gb} GB, user {user}, port {port}).{}", java_for_version(maj, min, pat), if busy.is_empty() { " It is starting (it takes a minute)." } else { &clash }))
+    } else {
+        Ok(format!("{name} is set up but will not start until the EULA is accepted: run `mc accept {name}` (or set eula=true in {folder}/eula.txt).{clash}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,6 +829,44 @@ mod tests {
         std::fs::create_dir_all(d.join("usr/lib/jvm/java-21-openjdk/bin")).unwrap();
         std::fs::write(d.join("usr/lib/jvm/java-21-openjdk/bin/java"), "").unwrap();
         d
+    }
+
+    #[test]
+    fn versions_are_read_from_file_names_and_give_the_right_java() {
+        assert_eq!(version_in_name("paper-26.3-45.jar"), Some((26, 3, 0)));
+        assert_eq!(version_in_name("paper-1.21.4-232.jar"), Some((1, 21, 4)));
+        assert_eq!(version_in_name("server.jar"), None);
+        assert_eq!((java_for_version(26, 3, 0), java_for_version(1, 21, 4, ), java_for_version(1, 20, 6), java_for_version(1, 20, 4), java_for_version(1, 16, 5)), (25, 21, 21, 17, 8));
+    }
+
+    #[test]
+    fn a_server_copied_into_a_folder_is_set_up_as_a_service() {
+        use std::os::unix::fs::MetadataExt;
+        let r = world("import", 16_000_000);
+        let mut uid = std::fs::metadata(&r).unwrap().uid();
+        let as_root = uid == 0; if as_root { uid = 4242; }
+        std::fs::write(r.join("etc/passwd"), format!("root:x:0:0::/root:/bin/ash\nguy:x:{uid}:{uid}::/home/guy:/bin/ash\n")).unwrap();
+        std::fs::create_dir_all(r.join("usr/lib/jvm/java-25-openjdk/bin")).unwrap(); std::fs::write(r.join("usr/lib/jvm/java-25-openjdk/bin/java"), "").unwrap();
+        let d = r.join("home/guy/Documents/mc_server"); std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("paper-26.3-45.jar"), "x").unwrap(); std::fs::write(d.join("eula.txt"), "eula=true\n").unwrap(); std::fs::write(d.join("server.properties"), "server-port=25570\n").unwrap();
+        let own = |p: &std::path::Path| if as_root { let _ = std::os::unix::fs::chown(p, Some(4242), Some(4242)); };
+        own(&d);
+        let f = fake(GOOD_SHA); let ctx = Ctx { root: &r, runner: &f };
+        let msg = import(&ctx, "mine", "/home/guy/Documents/mc_server", 4).unwrap();
+        assert!(msg.contains("starting") && msg.contains("25570") && msg.contains("Java 25"), "{msg}");
+        let conf = std::fs::read_to_string(r.join("etc/exec85/services/mine.conf")).unwrap();
+        assert!(conf.contains("dir=/home/guy/Documents/mc_server") && conf.contains(&format!("user=guy")) && conf.contains("-jar paper-26.3-45.jar nogui") && conf.contains("ports=25570/tcp") && conf.contains("autostart=yes") || conf.contains("autostart=true"), "{conf}");
+        assert!(import(&ctx, "mine", "/home/guy/Documents/mc_server", 4).unwrap_err().contains("already exists"));
+        assert!(import(&ctx, "other", "/home/guy/Documents/Minecraft server", 4).unwrap_err().contains("no spaces"));
+        assert!(import(&ctx, "other", "/etc", 4).unwrap_err().contains("under /home"));
+        assert!(import(&ctx, "other", "/home/guy/Documents/nothere", 4).unwrap_err().contains("does not exist"));
+        // two jar files and no clear name
+        let e = r.join("home/guy/e"); std::fs::create_dir_all(&e).unwrap(); std::fs::write(e.join("a.jar"), "x").unwrap(); std::fs::write(e.join("b.jar"), "x").unwrap(); own(&e);
+        assert!(import(&ctx, "e", "/home/guy/e", 4).unwrap_err().contains("which file"));
+        // no eula yet: set up but not started; same port as the first server is mentioned
+        let g = r.join("home/guy/g"); std::fs::create_dir_all(&g).unwrap(); std::fs::write(g.join("server.jar"), "x").unwrap(); std::fs::write(g.join("version_history.json"), r#"{"currentVersion": "paper-26.3-45 (MC: 26.3)"}"#).unwrap(); std::fs::write(g.join("server.properties"), "server-port=25570\n").unwrap(); own(&g);
+        let m2 = import(&ctx, "g", "/home/guy/g", 4).unwrap();
+        assert!(m2.contains("EULA") && m2.contains("also use port 25570") && m2.contains("mine"), "{m2}");
     }
 
     const GOOD_SHA: &str = "0123456789abcdef0123456789abcdef01234567";

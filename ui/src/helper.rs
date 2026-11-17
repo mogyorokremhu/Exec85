@@ -220,6 +220,7 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
             let base = w.get(7).map(String::as_str).filter(|b| !b.is_empty()).unwrap_or(crate::mc::DEFAULT_BASE);
             crate::mc::create(ctx, &crate::mc::Create { kind, name, version, ram_gb, eula: eula == "1", user, base })
         }
+        "mc-import" => crate::mc::import(ctx, arg(1)?, arg(2)?, arg(3)?.parse().map_err(|_| "RAM must be 2, 4 or 8.".to_string())?),
         "fw-status" => {
             let c = fw_config(ctx.root);
             let mut out = format!("enabled {}\n", if c.enabled { "yes" } else { "no" });
@@ -626,6 +627,7 @@ pub fn cli(args: &[String]) -> i32 {
             let user = rest.iter().position(|a| *a == "--user").and_then(|i| rest.get(i + 1).copied()).map(String::from).unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
             show(call(&["ssh-addkey", &user, key]))
         }
+        ["--mc", "import", name, folder, ram] => show(call(&["mc-import", name, folder, ram])),
         ["--mc", "accept", name] => show(call(&["mc-accept", name])),
         ["--mc", "status", name] => show(call(&["mc-status", name])),
         ["--mc", "list"] => show(call(&["mc-list"])),
