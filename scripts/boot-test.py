@@ -675,6 +675,12 @@ def scenario_webaccess(disk):
             terminal_run(vm, "sleep 8; vpn status | grep -c -E 'installed=yes|running=yes'; echo VS$((5-3))", "re:2.?VS2", 120, "vpn: the daemon answers (installed and running)")
             terminal_run(vm, "ip link show tailscale0 > /dev/null 2>&1; echo VT$?", "VT0", 30, "vpn: the private network device (tailscale0) exists")
             terminal_run(vm, "vpn login > /tmp/vl.txt 2>&1; grep -c 'https://' /tmp/vl.txt; echo VL$((5-3))", "re:1.?VL2", 180, "vpn: signing in offers an address to open")
+            # Ad blocker: installs the DNS server, downloads the list, blocks a listed name, passes other names on, honours the allowed list
+            terminal_run(vm, "adblock on > /tmp/ab.txt 2>&1; grep -c 'ad blocker is on' /tmp/ab.txt; echo AB$((5-3))", "re:1.?AB2", 500, "adblock: it is switched on (DNS server installed, list downloaded)")
+            terminal_run(vm, "D=$(sed -n 100p /etc/exec85/adblock/blocklist.hosts | cut -d' ' -f2); sleep 3; echo $(nslookup $D 127.0.0.1 2>&1 | grep -c '0[.]0[.]0[.]0') AD$((5-3))", "re:[1-9].AD2", 60, "adblock: a name on the list is answered with 0.0.0.0 (blocked)")
+            terminal_run(vm, "echo $(nslookup example.com 127.0.0.1 2>&1 | grep -c '^Address') $(nslookup example.com 127.0.0.1 2>&1 | grep -c '0[.]0[.]0[.]0') AE$((5-3))", "re:[2-9].0.AE2", 60, "adblock: other names are looked up normally")
+            terminal_run(vm, "adblock allow $D > /dev/null 2>&1; sleep 4; echo $(nslookup $D 127.0.0.1 2>&1 | grep -c '0[.]0[.]0[.]0') AA$((5-3))", "re:0.AA2", 90, "adblock: an allowed name is no longer blocked")
+            terminal_run(vm, "adblock off > /dev/null 2>&1; svc list | grep -c adblock; echo AO$((5-3))", "re:0.?AO2", 90, "adblock: it can be switched off again")
         terminal_run(vm, "webaccess off > /dev/null 2>&1; svc list | grep -c webaccess; echo WO$((5-3))", "re:0.?WO2", 90, "web access: it can be switched off again")
     finally:
         vm.stop()
@@ -757,7 +763,7 @@ def mc_login(port, protocol, online):
     c.s.close(); return "no answer"
 
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel", "updates", "sitewatch", "gallery", "tailscale"]
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel", "updates", "sitewatch", "gallery", "tailscale", "adblock"]
 
 SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}

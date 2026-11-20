@@ -13,6 +13,7 @@ pub mod health;
 pub mod logs;
 pub mod gallery;
 pub mod tailscale;
+pub mod adblock;
 pub mod sitewatch;
 pub mod tunnel;
 pub mod updates;
@@ -36,12 +37,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft, DiscordBot, Remote, Catalog, Browser, Health, Logs, Tunnel, Updates, Sitewatch, Gallery, Tailscale }
+pub enum Kind { Notepad, Terminal, Paint, Monitor, DiskUsage, Network, Clock, Calculator, Reversi, Snake, Services, Software, Minecraft, DiscordBot, Remote, Catalog, Browser, Health, Logs, Tunnel, Updates, Sitewatch, Gallery, Tailscale, Adblock }
 
 impl Kind {
     /// The app a shortcut file names ("app:terminal").
     pub fn parse(name: &str) -> Option<Kind> {
-        [Kind::Notepad, Kind::Terminal, Kind::Paint, Kind::Monitor, Kind::DiskUsage, Kind::Network, Kind::Clock, Kind::Calculator, Kind::Reversi, Kind::Snake, Kind::Services, Kind::Software, Kind::Minecraft, Kind::DiscordBot, Kind::Remote, Kind::Catalog, Kind::Browser, Kind::Health, Kind::Logs, Kind::Tunnel, Kind::Updates, Kind::Sitewatch, Kind::Gallery, Kind::Tailscale]
+        [Kind::Notepad, Kind::Terminal, Kind::Paint, Kind::Monitor, Kind::DiskUsage, Kind::Network, Kind::Clock, Kind::Calculator, Kind::Reversi, Kind::Snake, Kind::Services, Kind::Software, Kind::Minecraft, Kind::DiscordBot, Kind::Remote, Kind::Catalog, Kind::Browser, Kind::Health, Kind::Logs, Kind::Tunnel, Kind::Updates, Kind::Sitewatch, Kind::Gallery, Kind::Tailscale, Kind::Adblock]
             .into_iter().find(|k| k.name() == name)
     }
 
@@ -49,7 +50,7 @@ impl Kind {
         match self {
             Kind::Notepad => "notepad", Kind::Terminal => "terminal", Kind::Paint => "paint", Kind::Monitor => "monitor",
             Kind::DiskUsage => "diskusage", Kind::Network => "network", Kind::Clock => "clock",
-            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft", Kind::DiscordBot => "discordbot", Kind::Remote => "remote", Kind::Catalog => "catalog", Kind::Browser => "browser", Kind::Health => "health", Kind::Logs => "logs", Kind::Tunnel => "tunnel", Kind::Updates => "updates", Kind::Sitewatch => "sitewatch", Kind::Gallery => "gallery", Kind::Tailscale => "tailscale",
+            Kind::Calculator => "calculator", Kind::Reversi => "reversi", Kind::Snake => "snake", Kind::Services => "services", Kind::Software => "software", Kind::Minecraft => "minecraft", Kind::DiscordBot => "discordbot", Kind::Remote => "remote", Kind::Catalog => "catalog", Kind::Browser => "browser", Kind::Health => "health", Kind::Logs => "logs", Kind::Tunnel => "tunnel", Kind::Updates => "updates", Kind::Sitewatch => "sitewatch", Kind::Gallery => "gallery", Kind::Tailscale => "tailscale", Kind::Adblock => "adblock",
         }
     }
 }
@@ -116,6 +117,7 @@ pub fn create(kind: Kind, env: &Env) -> Box<dyn Application> {
         Kind::Sitewatch => Box::new(sitewatch::Sitewatch::new(helper_backend())),
         Kind::Gallery => Box::new(gallery::Gallery::new(helper_backend())),
         Kind::Tailscale => Box::new(tailscale::Tailscale::new(helper_backend())),
+        Kind::Adblock => Box::new(adblock::Adblock::new(helper_backend())),
         Kind::Browser => Box::new(browser::Browser::new(browser::web_backend(crate::homedirs::downloads_dir(&env.home)), helper_backend())),
         Kind::Remote => Box::new(remote::Remote::new(helper_backend())),
         Kind::DiscordBot => Box::new(discordbot::DiscordBot::new(helper_backend())),

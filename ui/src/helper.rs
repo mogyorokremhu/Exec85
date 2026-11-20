@@ -266,6 +266,13 @@ pub fn handle(ctx: &Ctx, w: &[String]) -> Result<String, String> {
         "update-config" => { crate::update::set_conf(ctx, arg(1)?, w.get(2).map(String::as_str).unwrap_or(""))?; Ok("Saved.".into()) }
         "tunnel-status" => Ok(crate::tunnel::status(ctx)),
         "pw-set" => { crate::account::set_password(ctx.root, arg(1)?, arg(2)?).map_err(|e| e.to_string())?; Ok(format!("The password of {} is changed.", arg(1)?)) }
+        "ab-status" => Ok(crate::adblock::status(ctx)),
+        "ab-enable" => crate::adblock::enable(ctx),
+        "ab-disable" => crate::adblock::disable(ctx),
+        "ab-update" => crate::adblock::update(ctx),
+        "ab-allow" => crate::adblock::allow(ctx, arg(1)?),
+        "ab-unallow" => crate::adblock::unallow(ctx, arg(1)?),
+        "ab-check" => crate::adblock::check(ctx, arg(1)?),
         "ts-status" => Ok(crate::tailscale::status(ctx)),
         "ts-install" => crate::tailscale::install(ctx),
         "ts-login" => crate::tailscale::login(ctx),
@@ -664,6 +671,13 @@ pub fn cli(args: &[String]) -> i32 {
             if a != b { eprintln!("The two passwords are not the same. Nothing was changed."); return 1; }
             show(call(&["pw-set", &name, &a]))
         }
+        ["--adblock"] | ["--adblock", "status"] => show(call(&["ab-status"])),
+        ["--adblock", "on"] => show(call(&["ab-enable"])),
+        ["--adblock", "off"] => show(call(&["ab-disable"])),
+        ["--adblock", "update"] => show(call(&["ab-update"])),
+        ["--adblock", "allow", d] => show(call(&["ab-allow", d])),
+        ["--adblock", "unallow", d] => show(call(&["ab-unallow", d])),
+        ["--adblock", "check", d] => show(call(&["ab-check", d])),
         ["--vpn"] | ["--vpn", "status"] => show(call(&["ts-status"])),
         ["--vpn", "install"] => show(call(&["ts-install"])),
         ["--vpn", "login"] => show(call(&["ts-login"])),
