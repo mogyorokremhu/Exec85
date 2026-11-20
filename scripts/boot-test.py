@@ -680,6 +680,8 @@ def scenario_webaccess(disk):
             terminal_run(vm, "D=$(sed -n 100p /etc/exec85/adblock/blocklist.hosts | cut -d' ' -f2); sleep 3; echo $(nslookup $D 127.0.0.1 2>&1 | grep -c '0[.]0[.]0[.]0') AD$((5-3))", "re:[1-9].AD2", 60, "adblock: a name on the list is answered with 0.0.0.0 (blocked)")
             terminal_run(vm, "echo $(nslookup example.com 127.0.0.1 2>&1 | grep -c '^Address') $(nslookup example.com 127.0.0.1 2>&1 | grep -c '0[.]0[.]0[.]0') AE$((5-3))", "re:[2-9].0.AE2", 60, "adblock: other names are looked up normally")
             terminal_run(vm, "adblock allow $D > /dev/null 2>&1; sleep 4; echo $(nslookup $D 127.0.0.1 2>&1 | grep -c '0[.]0[.]0[.]0') AA$((5-3))", "re:0.AA2", 90, "adblock: an allowed name is no longer blocked")
+            terminal_run(vm, "adblock block example.org > /dev/null 2>&1; sleep 4; echo $(nslookup www.example.org 127.0.0.1 2>&1 | grep -c '0[.]0[.]0[.]0') AM$((5-3))", "re:[1-9].AM2", 90, "adblock: a site you block yourself is blocked with its subdomains")
+            terminal_run(vm, "adblock unblock example.org > /dev/null 2>&1; sleep 4; echo $(nslookup www.example.org 127.0.0.1 2>&1 | grep -c '0[.]0[.]0[.]0') AU$((5-3))", "re:0.AU2", 90, "adblock: and unblocked again")
             terminal_run(vm, "adblock off > /dev/null 2>&1; svc list | grep -c adblock; echo AO$((5-3))", "re:0.?AO2", 90, "adblock: it can be switched off again")
         terminal_run(vm, "webaccess off > /dev/null 2>&1; svc list | grep -c webaccess; echo WO$((5-3))", "re:0.?WO2", 90, "web access: it can be switched off again")
     finally:
