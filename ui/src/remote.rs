@@ -242,20 +242,22 @@ fn read_body(reader: &mut impl Read, req: &Request, max: usize) -> Result<Vec<u8
     Ok(b)
 }
 
+/// Close a connection politely: when a reply goes out before the request's body was read (a refusal), closing with unread bytes makes the
+/// system reset the connection and the browser may lose the end of the reply. Finish sending, then read what is left.
+pub(crate) fn close_politely(c: TcpStream) {
+    use std::io::Read;
+    let _ = c.shutdown(std::net::Shutdown::Write);
+    let _ = c.set_read_timeout(Some(Duration::from_millis(400)));
+    let mut sink = [0u8; 4096]; let mut left = 1usize << 20;
+    let mut c = c;
+    while left > 0 { match c.read(&mut sink) { Ok(0) | Err(_) => break, Ok(n) => left = left.saturating_sub(n) } }
+}
+
 pub fn handle_connection(srv: Arc<Server>, conn: TcpStream) {
     if srv.connections.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS { srv.connections.fetch_sub(1, Ordering::SeqCst); return; }
     let closer = conn.try_clone().ok();
     let _ = handle(&srv, conn);
-    // Close politely: when a reply goes out before the request's body was read (a refusal), closing with unread bytes makes the
-    // system reset the connection and the browser may lose the end of the reply. Finish sending, then read what is left.
-    if let Some(c) = closer {
-        use std::io::Read;
-        let _ = c.shutdown(std::net::Shutdown::Write);
-        let _ = c.set_read_timeout(Some(Duration::from_millis(400)));
-        let mut sink = [0u8; 4096]; let mut left = 1usize << 20;
-        let mut c = c;
-        while left > 0 { match c.read(&mut sink) { Ok(0) | Err(_) => break, Ok(n) => left = left.saturating_sub(n) } }
-    }
+    if let Some(c) = closer { close_politely(c); }
     srv.connections.fetch_sub(1, Ordering::SeqCst);
 }
 

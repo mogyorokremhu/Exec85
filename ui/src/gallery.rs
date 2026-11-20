@@ -352,7 +352,9 @@ fn serve(listener: TcpListener, root: PathBuf, cfg: Config) -> ! {
         let s = srv.clone();
         thread::spawn(move || {
             if s.connections.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS { s.connections.fetch_sub(1, Ordering::SeqCst); return; }
+            let closer = conn.try_clone().ok();
             let _ = handle(&s, conn);
+            if let Some(c) = closer { remote::close_politely(c); }
             s.connections.fetch_sub(1, Ordering::SeqCst);
         });
     }
