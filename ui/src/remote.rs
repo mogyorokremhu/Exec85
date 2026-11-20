@@ -244,7 +244,18 @@ fn read_body(reader: &mut impl Read, req: &Request, max: usize) -> Result<Vec<u8
 
 pub fn handle_connection(srv: Arc<Server>, conn: TcpStream) {
     if srv.connections.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS { srv.connections.fetch_sub(1, Ordering::SeqCst); return; }
+    let closer = conn.try_clone().ok();
     let _ = handle(&srv, conn);
+    // Close politely: when a reply goes out before the request's body was read (a refusal), closing with unread bytes makes the
+    // system reset the connection and the browser may lose the end of the reply. Finish sending, then read what is left.
+    if let Some(c) = closer {
+        use std::io::Read;
+        let _ = c.shutdown(std::net::Shutdown::Write);
+        let _ = c.set_read_timeout(Some(Duration::from_millis(400)));
+        let mut sink = [0u8; 4096]; let mut left = 1usize << 20;
+        let mut c = c;
+        while left > 0 { match c.read(&mut sink) { Ok(0) | Err(_) => break, Ok(n) => left = left.saturating_sub(n) } }
+    }
     srv.connections.fetch_sub(1, Ordering::SeqCst);
 }
 
@@ -603,6 +614,15 @@ mod tests {
         let ck = format!("Cookie: sid={token}\r\n");
         assert!(http(addr, &format!("GET /api/me HTTP/1.1\r\nHost: x\r\n{ck}\r\n"), b"").1.starts_with(b"{\"ok\":true,\"user\":\"tester\""));
         assert!(post(addr, "/api/key", &ck, "", "k alt-a\n").0.starts_with("HTTP/1.1 403"), "a key press without the header is refused");
+        // a refusal sent before the body was read still arrives whole (the connection is not reset under the browser)
+        for _ in 0..30 {
+            let mut c = TcpStream::connect(addr).unwrap(); c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let body = "k alt-a\n".repeat(300);
+            c.write_all(format!("POST /api/key HTTP/1.1\r\nHost: x\r\n{ck}Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+            let mut all = Vec::new(); c.read_to_end(&mut all).expect("the reply must arrive whole");
+            let text = String::from_utf8_lossy(&all).into_owned();
+            assert!(text.starts_with("HTTP/1.1 403") && text.contains("Missing header"), "{text:?}");
+        }
         assert!(post(addr, "/api/key", &ck, h, "k alt-a\n").0.starts_with("HTTP/1.1 409"), "no screen has been asked for yet");
 
         // the screen stream: the first thing it says is what the session program says
