@@ -670,6 +670,11 @@ def scenario_webaccess(disk):
             for i in range(5): gcall("POST", "/api/login", "pass=wrong%d" % i, form)
             step("gallery: after five wrong passwords even the right one waits", gcall("POST", "/api/login", "pass=test-pass-9", form)[0] == 429)
             terminal_run(vm, "gallery off > /dev/null 2>&1; svc list | grep -c gallery; echo GO$((5-3))", "re:0.?GO2", 90, "gallery: it can be switched off again")
+            # Tailscale: installs from Alpine's packages, the service runs with the kernel's tun device, and signing in offers an address to open
+            terminal_run(vm, "vpn install > /tmp/v.txt 2>&1; grep -c 'is installed' /tmp/v.txt; echo VI$((5-3))", "re:1.?VI2", 400, "vpn: Tailscale is installed and its service started")
+            terminal_run(vm, "sleep 8; vpn status | grep -c -E 'installed=yes|running=yes'; echo VS$((5-3))", "re:2.?VS2", 120, "vpn: the daemon answers (installed and running)")
+            terminal_run(vm, "ip link show tailscale0 > /dev/null 2>&1; echo VT$?", "VT0", 30, "vpn: the private network device (tailscale0) exists")
+            terminal_run(vm, "vpn login > /tmp/vl.txt 2>&1; grep -c 'https://' /tmp/vl.txt; echo VL$((5-3))", "re:1.?VL2", 180, "vpn: signing in offers an address to open")
         terminal_run(vm, "webaccess off > /dev/null 2>&1; svc list | grep -c webaccess; echo WO$((5-3))", "re:0.?WO2", 90, "web access: it can be switched off again")
     finally:
         vm.stop()
@@ -752,7 +757,7 @@ def mc_login(port, protocol, online):
     c.s.close(); return "no answer"
 
 
-APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel", "updates", "sitewatch", "gallery"]
+APPS = ["notepad", "terminal", "paint", "monitor", "diskusage", "network", "clock", "calculator", "reversi", "snake", "services", "software", "minecraft", "discordbot", "remote", "catalog", "browser", "health", "logs", "tunnel", "updates", "sitewatch", "gallery", "tailscale"]
 
 SHIFTED = {"+": "shift-equal", "_": "shift-minus", ":": "shift-semicolon", '"': "shift-apostrophe", "$": "shift-4", "?": "shift-slash", "|": "shift-backslash", ">": "shift-dot", "&": "shift-7", "*": "shift-8", "(": "shift-9", ")": "shift-0", "{": "shift-bracket_left", "}": "shift-bracket_right"}
 PLAIN = {"[": "bracket_left", "]": "bracket_right", " ": "spc", "-": "minus", ".": "dot", "/": "slash", "=": "equal", "'": "apostrophe", ";": "semicolon", ",": "comma", "\\": "backslash"}

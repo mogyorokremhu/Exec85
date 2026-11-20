@@ -5,7 +5,7 @@ use crate::fs::{self as xfs, fmt_size, fmt_time, Drive, Sort};
 use std::io::Write;
 use std::path::Path;
 
-pub const COMMANDS: [(&str, &str); 21] = [
+pub const COMMANDS: [(&str, &str); 22] = [
     ("help", "this list"),
     ("dir", "list a folder with sizes and dates"),
     ("disk", "how full each drive is"),
@@ -17,6 +17,7 @@ pub const COMMANDS: [(&str, &str); 21] = [
     ("health", "disk health (SMART) and temperatures"),
     ("logs", "logs: logs (list) | logs NAME (newest lines, e.g. logs kernel)"),
     ("update", "updates: update status | check | install | apply FILE | rollback | previous | token"),
+    ("vpn", "Tailscale private network: vpn status | install | login | logout | off"),
     ("passwd", "change a password (yours, or another user's: passwd NAME); needed for the browser page"),
     ("gallery", "photo and video web page for one folder: gallery folder PATH | password | uploads on|off | on | off | status"),
     ("sitewatch", "website monitor with phone alerts: sitewatch add URL [minutes] | list | remove ID | notify ntfy TOPIC | test | on | off"),

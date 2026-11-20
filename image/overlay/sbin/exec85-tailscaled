@@ -1,0 +1,5 @@
+#!/bin/sh
+# Starts the Tailscale daemon (the service "tailscaled" runs this): the kernel needs its tun module, and the folders must exist.
+modprobe tun 2>/dev/null
+mkdir -p /var/lib/tailscale /var/run/tailscale
+exec /usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock

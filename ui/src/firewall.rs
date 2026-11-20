@@ -88,6 +88,7 @@ pub fn render_ruleset(c: &Config, service_rules: &[Rule]) -> String {
             Scope::Local => {
                 let _ = writeln!(s, "\t\tip saddr {LOCAL_V4} {pr} dport {p} accept comment \"{}\"", r.name);
                 let _ = writeln!(s, "\t\tip6 saddr {LOCAL_V6} {pr} dport {p} accept comment \"{}\"", r.name);
+                let _ = writeln!(s, "\t\tiifname \"tailscale0\" {pr} dport {p} accept comment \"{} (Tailscale)\"", r.name);
             }
         }
     }
@@ -127,13 +128,14 @@ mod tests {
         assert!(r.contains("policy drop") && r.contains("ct state established,related accept") && r.contains("iif \"lo\" accept") && r.contains("udp dport 68 accept"), "{r}");
         assert!(r.contains("ip saddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } tcp dport 22 accept") && r.contains("ip6 saddr { fc00::/7, fe80::/10 } tcp dport 22 accept"), "local = home addresses only: {r}");
         assert!(r.contains("\t\tudp dport 25565 accept comment \"mc-query\""), "anywhere has no address condition: {r}");
+        assert!(r.contains("iifname \"tailscale0\" tcp dport 22 accept") && r.contains("iifname \"tailscale0\" tcp dport 25565 accept") && !r.contains("iifname \"tailscale0\" udp"), "the Tailscale network is treated like the home network, for local rules only: {r}");
         assert!(r.starts_with("# Generated") && r.contains("delete table inet exec85"), "the script replaces the old table in one go");
         assert_eq!(r.matches('{').count(), r.matches('}').count(), "balanced braces");
         let off = render_ruleset(&Config { enabled: false, rules: vec![] }, &svc);
         assert!(off.contains("policy accept") && !off.contains("dport"), "switched off: everything is let in, no rules");
         // the same port opened twice (a service and a hand rule) is written once
         let dup = render_ruleset(&Config { enabled: true, rules: vec![Rule { name: "a".into(), port: 80, proto: Proto::Tcp, scope: Scope::Local }] }, &[Rule { name: "b".into(), port: 80, proto: Proto::Tcp, scope: Scope::Local }]);
-        assert_eq!(dup.matches("tcp dport 80").count(), 2, "once for IPv4 and once for IPv6, not four times");
+        assert_eq!(dup.matches("tcp dport 80").count(), 3, "once for IPv4, once for IPv6 and once for Tailscale, not twice each");
     }
 
     #[test]
